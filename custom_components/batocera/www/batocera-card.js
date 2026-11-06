@@ -50,12 +50,19 @@ const STRINGS = {
   noMatch: "NO MATCH",
   nowPlaying: "NOW PLAYING",
   noSignal: "NO SIGNAL",
+  pressStart: "PRESS START",
+  cancel: "CANCEL",
+  quits: (title) => `QUITS ${title}`,
+  alreadyPlaying: "ALREADY PLAYING",
+  didNotStart: "IT DID NOT START: TRY AGAIN",
 };
 
 // How long the kill button waits for its second tap.
 const SURE_MS = 4000;
 // Covers fetched at once: the box downscales them one by one.
 const COVERS_AT_ONCE = 4;
+// How long a launch may take before the card stops waiting for it.
+const START_MS = 30000;
 // The folders of a system: all its games, its favourites, played last.
 const TABS = [["system", "all"], ["fav", "favourites"], ["recent", "recent"]];
 
@@ -112,6 +119,13 @@ const STYLE = `
   .tn { overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
         -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .dir .art { aspect-ratio: auto; min-height: 64px; }
+  .sheet { position: fixed; inset: 0; z-index: 5; display: flex; align-items: center;
+           justify-content: center; padding: 16px; background: rgba(0, 0, 0, 0.7); }
+  .sheet .panel { width: min(100%, 420px); max-height: 100%; overflow: auto; box-sizing: border-box;
+                  display: flex; flex-direction: column; gap: 10px; padding: 20px; text-align: center; }
+  .sheet .art { width: min(60vw, 200px); margin: 0 auto; }
+  .sbtns { display: flex; flex-direction: column; gap: 10px; }
+  .swarn:empty, .smsg:empty { display: none; }
 `;
 
 class BatoceraCard extends HTMLElement {
@@ -131,6 +145,7 @@ class BatoceraCard extends HTMLElement {
     clearInterval(this._ticker);
     this._ticker = undefined;
     clearTimeout(this._sureTimer);
+    clearTimeout(this._startTimer);
     if (this._observer) this._observer.disconnect();
     this._observer = undefined;
     this._queue = [];
@@ -209,6 +224,19 @@ class BatoceraCard extends HTMLElement {
           <div class="status"><div class="big"></div><div class="note"></div></div>
           <div class="grid"></div>
         </section>
+        <div class="sheet hidden" role="dialog" aria-modal="true">
+          <div class="panel">
+            <div class="art"><span class="nosignal">${STRINGS.noSignal}</span><img alt=""></div>
+            <div class="stitle"></div>
+            <div class="ssystem"></div>
+            <div class="swarn"></div>
+            <div class="smsg"></div>
+            <div class="sbtns">
+              <button class="start" type="button">${STRINGS.pressStart}</button>
+              <button class="cancel" type="button">${STRINGS.cancel}</button>
+            </div>
+          </div>
+        </div>
       </div>`;
     const $ = (sel) => root.querySelector(sel);
     this.$ = {
@@ -217,7 +245,10 @@ class BatoceraCard extends HTMLElement {
       pause: $(".pause"), kill: $(".kill"), banner: $(".banner"), big: $(".banner .big"),
       note: $(".banner .note"), back: $(".back"), where: $(".where"), tabs: $(".tabs"),
       search: $(".search"), status: $(".status"), statusBig: $(".status .big"),
-      statusNote: $(".status .note"), grid: $(".grid"),
+      statusNote: $(".status .note"), grid: $(".grid"), sheet: $(".sheet"),
+      sart: $(".sheet .art"), simg: $(".sheet .art img"), stitle: $(".stitle"),
+      ssystem: $(".ssystem"), swarn: $(".swarn"), smsg: $(".smsg"), start: $(".start"),
+      cancel: $(".cancel"),
     };
     this.$.pause.addEventListener("click", () => this._pause());
     this.$.kill.addEventListener("click", () => this._kill());
@@ -233,6 +264,14 @@ class BatoceraCard extends HTMLElement {
       const item = this._items[Number(tile.dataset.index)];
       if (item && item.can_expand) this._open(item.media_content_id, item.title);
       else if (item && item.can_play) this._pick(item);
+    });
+    this.$.start.addEventListener("click", () => this._start());
+    this.$.cancel.addEventListener("click", () => this._close());
+    this.$.sheet.addEventListener("click", (e) => {
+      if (e.target === this.$.sheet) this._close();
+    });
+    this.$.sheet.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") this._close();
     });
     this._stack = [{ id: "", title: "" }];
     this._systems = {};  // system name -> its full name, from the root
@@ -303,7 +342,81 @@ class BatoceraCard extends HTMLElement {
       });
   }
 
-  _pick() {}
+  // --- the launch sheet -------------------------------------------------
+
+  _pick(item) {
+    this._sheet = { item };
+    const art = this.$.sart;
+    art.classList.remove("loaded", "none");
+    this.$.simg.removeAttribute("src");
+    if (item.thumbnail) {
+      this._cover(art, this.$.simg, item.thumbnail);
+      this._pump();
+    } else {
+      art.classList.add("none");
+    }
+    this._renderSheet();
+    this.$.start.focus();
+  }
+
+  _close() {
+    this._sheet = undefined;
+    clearTimeout(this._startTimer);
+    this._renderSheet();
+  }
+
+  _start() {
+    const sheet = this._sheet;
+    if (!sheet || sheet.until) return;
+    sheet.until = Date.now() + START_MS;
+    sheet.message = "";
+    clearTimeout(this._startTimer);
+    this._startTimer = setTimeout(() => this._renderSheet(), START_MS + 50);
+    this._renderSheet();
+    this._call("play_media", {
+      media_content_id: sheet.item.media_content_id, media_content_type: "game",
+    }).catch((err) => {
+      if (this._sheet !== sheet) return;
+      sheet.until = undefined;
+      sheet.message = (err && err.message) || String(err);
+      this._renderSheet();
+    });
+  }
+
+  _renderSheet() {
+    const sheet = this._sheet;
+    this.$.sheet.classList.toggle("hidden", !sheet);
+    if (!sheet) return;
+    const { state, attr } = this._player();
+    const playing = state === "playing" || state === "paused";
+    const id = sheet.item.media_content_id;
+    // Started: the box plays it now.
+    if (sheet.until && playing && attr.media_content_id === id) {
+      this._close();
+      return;
+    }
+    if (sheet.until && Date.now() > sheet.until) {
+      sheet.until = undefined;
+      sheet.message = STRINGS.didNotStart;
+    }
+    const lock = this._state("locked");
+    const locked = !!lock && lock.state === "on";
+    const online = playing || state === "idle";
+    const [, system] = split(id);
+    const same = playing && attr.media_content_id === id && !sheet.until;
+    this.$.stitle.textContent = sheet.item.title;
+    this.$.ssystem.textContent = this._systems[system.split(":")[0]] || "";
+    this.$.swarn.textContent = same ? STRINGS.alreadyPlaying
+      : playing && !sheet.until ? STRINGS.quits(attr.media_title || "") : "";
+    let why = "";
+    if (!this._control) why = STRINGS.browseOnly;
+    else if (!online) why = STRINGS.offline;
+    else if (locked) why = STRINGS.lockReasons[lock.attributes.reason] || STRINGS.locked;
+    this.$.smsg.textContent = sheet.message || why;
+    this.$.start.classList.toggle("hidden", !this._control || same);
+    this.$.start.disabled = !!why || !!sheet.until;
+    this.$.start.textContent = sheet.until ? STRINGS.loading : STRINGS.pressStart;
+  }
 
   _tile(item, index, playingId) {
     const tile = el("button", item.can_expand ? "tile dir" : "tile game");
@@ -539,6 +652,7 @@ class BatoceraCard extends HTMLElement {
     this.$.note.textContent = note;
     this.$.banner.className = `banner ${kind}`;
     this.$.banner.classList.toggle("hidden", !big);
+    this._renderSheet();
   }
 }
 

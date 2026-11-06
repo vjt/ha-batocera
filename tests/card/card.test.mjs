@@ -85,9 +85,10 @@ async function mount(states = idleStates(), { control = true, ws = {}, folders =
   card.setConfig({ name: "Arcade", entry_id: "e1", entities: ENTITIES });
   window.document.body.appendChild(card);
   let current = states;
+  let answer = () => Promise.resolve();  // what the services answer
   const hass = () => ({
     states: { ...current },
-    callService: (d, sv, data) => { calls.push([d, sv, data]); return Promise.resolve(); },
+    callService: (d, sv, data) => { calls.push([d, sv, data]); return answer(); },
     callWS: (msg) => {
       wsCalls.push(msg);
       if (msg.type === "batocera/access") return Promise.resolve({ control });
@@ -122,7 +123,8 @@ async function mount(states = idleStates(), { control = true, ws = {}, folders =
     $(".search").dispatchEvent(new window.Event("input"));
     await flush();
   };
-  return { window, card, root, $, $$, calls, wsCalls, fetched, sent, asked, set, text, shown, tiles, open, type };
+  const services = (fn) => { answer = fn; };
+  return { window, card, root, $, $$, calls, wsCalls, fetched, sent, asked, set, text, shown, tiles, open, type, services };
 }
 
 // --- the now-playing bar ------------------------------------------------
@@ -318,6 +320,92 @@ test("a new catalog is read again; a system gone leads back to the top", async (
   await flush();
   assert.equal(t.text(".where"), "Arcade");
   assert.equal(t.tiles().length, 4);
+});
+
+// --- the launch sheet ---------------------------------------------------
+
+test("press start: launches, waits, and closes once it plays", async () => {
+  const t = await mount();
+  await t.open("Sega Mega Drive");
+  await t.open("Sonic the Hedgehog");
+  assert.ok(t.shown(".sheet"));
+  assert.equal(t.text(".stitle"), "Sonic the Hedgehog");
+  assert.equal(t.text(".ssystem"), "Sega Mega Drive");
+  assert.equal(t.text(".swarn"), "");
+  assert.ok(!t.$(".start").disabled);
+  t.$(".start").click();
+  await flush();
+  assert.deepEqual(t.sent(), [["media_player", "play_media", {
+    entity_id: "media_player.arcade", media_content_id: SONIC.media_content_id, media_content_type: "game",
+  }]]);
+  assert.equal(t.text(".start"), "LOADING…");
+  assert.ok(t.$(".start").disabled);
+  await t.set(playingStates());
+  assert.ok(!t.shown(".sheet"));
+});
+
+test("it says what it quits, or that it already plays", async () => {
+  const t = await mount(playingStates({
+    media_title: "Super Mario World", media_content_id: MARIO.media_content_id, source: "snes",
+  }));
+  await t.open("Sega Mega Drive");
+  await t.open("Streets of Rage");
+  assert.equal(t.text(".swarn"), "QUITS Super Mario World");
+  t.$(".cancel").click();
+  assert.ok(!t.shown(".sheet"));
+  await t.set(playingStates());  // Sonic runs
+  await t.open("Sonic the Hedgehog");
+  assert.equal(t.text(".swarn"), "ALREADY PLAYING");
+  assert.ok(!t.shown(".start"));
+});
+
+test("locked, offline or not allowed: no start", async () => {
+  const t = await mount(idleStates({ "binary_sensor.arcade_locked": s("on", { reason: "manual" }) }));
+  await t.open("Sega Mega Drive");
+  await t.open("Bare");
+  assert.ok(t.$(".start").disabled);
+  assert.equal(t.text(".smsg"), "LOCKED BY HAND");
+  assert.ok(t.$(".sheet .art").classList.contains("none"));
+  await t.set(idleStates({ "media_player.arcade": s("off") }));
+  assert.equal(t.text(".smsg"), "OFFLINE");
+  const u = await mount(idleStates(), { control: false });
+  await u.open("Super Nintendo");
+  await u.open("Super Mario World");
+  assert.ok(!u.shown(".start"));
+  assert.equal(u.text(".smsg"), "BROWSE ONLY");
+});
+
+test("a refused launch says why; one that never starts gives up", async () => {
+  const t = await mount();
+  t.services(() => Promise.reject(new Error("Arcade is locked: today's playtime is used up.")));
+  await t.open("Sega Mega Drive");
+  await t.open("Sonic the Hedgehog");
+  t.$(".start").click();
+  await flush();
+  assert.equal(t.text(".smsg"), "Arcade is locked: today's playtime is used up.");
+  assert.ok(!t.$(".start").disabled);
+
+  t.services(() => Promise.resolve());
+  t.$(".start").click();
+  await flush();
+  assert.equal(t.text(".start"), "LOADING…");
+  const now = t.window.Date.now;
+  t.window.Date.now = () => now() + 31000;
+  await t.set(idleStates());
+  t.window.Date.now = now;
+  assert.equal(t.text(".smsg"), "IT DID NOT START: TRY AGAIN");
+  assert.equal(t.text(".start"), "PRESS START");
+});
+
+test("the sheet closes on cancel, outside, or escape", async () => {
+  const t = await mount();
+  await t.open("Super Nintendo");
+  await t.open("Super Mario World");
+  t.$(".sheet").click();
+  assert.ok(!t.shown(".sheet"));
+  await t.open("Super Mario World");
+  t.$(".sheet").dispatchEvent(new t.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.ok(!t.shown(".sheet"));
 });
 
 for (const [name, fn] of tests) {
