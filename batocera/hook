@@ -1,0 +1,21 @@
+#!/bin/sh
+# ha-batocera launch hook, installed as /userdata/system/scripts/ha_batocera.
+#
+# Batocera runs every executable in /userdata/system/scripts on game start and
+# stop with: event system emulator core rom. The launcher waits for us, so we
+# hand the event to the daemon and return at once: never block a launch.
+# $PPID is the launcher; the daemon watches it to catch crashes.
+
+FIFO=${HA_BATOCERA_FIFO:-/var/run/ha-batocera.fifo}
+
+case "$1" in
+    gameStart|gameStop) ;;
+    *) exit 0 ;;
+esac
+[ -p "$FIFO" ] || exit 0
+
+line=$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$1" "$PPID" "$2" "$3" "$4" "$5")
+# The open blocks if nobody reads the FIFO: give up after a second.
+# shellcheck disable=SC2016  # expanded by the inner shell
+timeout 1 sh -c 'printf "%s\n" "$1" > "$2"' sh "$line" "$FIFO" 2>/dev/null
+exit 0

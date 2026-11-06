@@ -1,0 +1,30 @@
+#!/bin/bash
+# ha-batocera service, installed as /userdata/system/services/ha_batocera.
+# batocera-services (and the Services menu in EmulationStation) call it with
+# start, stop or status.
+
+DAEMON=/userdata/system/ha-batocera/ha_batocera.py
+PIDFILE=/var/run/ha-batocera.pid
+LOG=/userdata/system/logs/ha-batocera.log
+
+case "$1" in
+    start)
+        mkdir -p "$(dirname "$LOG")"
+        HA_BATOCERA_LOG=$LOG start-stop-daemon -S -b -q -m -p "$PIDFILE" \
+            --exec /usr/bin/python3 -- "$DAEMON"
+        ;;
+    stop)
+        # SIGTERM: the daemon publishes "off" and "offline" before leaving.
+        start-stop-daemon -K -q -p "$PIDFILE"
+        ;;
+    status)
+        if start-stop-daemon --status -q -p "$PIDFILE"; then
+            echo "started"
+        else
+            echo "stopped"
+        fi
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|status}"
+        ;;
+esac
