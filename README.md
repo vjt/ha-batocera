@@ -75,14 +75,17 @@ password. It then:
   EmulationStation);
 - installs the hook as `/userdata/system/scripts/ha_batocera`.
 
-Running it again upgrades the code and keeps the settings. The settings can
-also be passed in the environment, for unattended installs: `DEVICE`,
-`MQTT_HOST`, `MQTT_PORT`, `MQTT_USER`, `MQTT_PASSWORD`.
+Running it again upgrades the code and keeps the settings. For unattended
+installs, settings can be passed in the environment, and then replace the ones
+on the box: `DEVICE`, and `MQTT_HOST`, `MQTT_PORT`, `MQTT_USER`,
+`MQTT_PASSWORD`. When `MQTT_HOST` is set, nothing is asked about the broker:
+without `MQTT_USER` it is reached without authentication.
 
 Files on the box:
 
 | File | Contents |
 |------|----------|
+| `/userdata/system/ha-batocera/VERSION` | the installed version |
 | `/userdata/system/ha-batocera/ha-batocera.conf` | `device=` and, optionally, `topic_prefix=` (default `batocera`) |
 | `/userdata/system/ha-batocera/mosquitto_pub`, `mosquitto_sub` | broker options, one per line: `-h mqtt.example.lan`, `-p 1883`, `-u user`, `-P password`; TLS options such as `--cafile` work too |
 | `/userdata/system/logs/ha-batocera.log` | the daemon's log |
@@ -106,7 +109,7 @@ After changing any of them: `batocera-services stop ha_batocera; batocera-servic
 ### Uninstall
 
 ```sh
-/tmp/ha-batocera/uninstall.sh
+/userdata/system/ha-batocera/uninstall.sh
 ```
 
 It stops and removes the service, the hook and the daemon, and clears the

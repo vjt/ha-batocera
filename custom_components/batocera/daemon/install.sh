@@ -2,7 +2,8 @@
 # Install (or upgrade) ha-batocera on a Batocera box. Run it there as root,
 # from the folder that holds this script. It asks for the MQTT settings the
 # first time; later runs keep them. Settings can also come from the
-# environment: DEVICE, MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD.
+# environment, and then replace the ones on the box: DEVICE for the device
+# name; MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD for the broker.
 set -eu
 
 SRC=$(cd "$(dirname "$0")" && pwd)
@@ -20,8 +21,10 @@ chmod 700 "$HOME_DIR"
 install -m 755 "$SRC/ha_batocera.py" "$HOME_DIR/ha_batocera.py"
 install -m 755 "$SRC/service" "$SERVICE"
 install -m 755 "$SRC/hook" "$HOOK"
+install -m 755 "$SRC/uninstall.sh" "$HOME_DIR/uninstall.sh"
+install -m 644 "$SRC/VERSION" "$HOME_DIR/VERSION"
 
-if [ ! -f "$HOME_DIR/ha-batocera.conf" ]; then
+if [ -n "${DEVICE-}" ] || [ ! -f "$HOME_DIR/ha-batocera.conf" ]; then
     default=$(hostname | tr '[:upper:]' '[:lower:]')
     device=${DEVICE-}
     [ -n "$device" ] || read -rp "Device name for the MQTT topics [$default]: " device
@@ -31,15 +34,19 @@ fi
 # mosquitto_pub and mosquitto_sub read their options, one per line, from
 # $XDG_CONFIG_HOME/mosquitto_pub and mosquitto_sub; the daemon points
 # XDG_CONFIG_HOME at $HOME_DIR. This keeps the password off command lines.
-if [ ! -f "$HOME_DIR/mosquitto_pub" ]; then
-    host=${MQTT_HOST-}; port=${MQTT_PORT-}; user=${MQTT_USER-}; pass=${MQTT_PASSWORD-}
-    [ -n "$host" ] || read -rp "MQTT broker host: " host
-    [ -n "$port" ] || read -rp "MQTT broker port [1883]: " port
-    [ -n "$user" ] || read -rp "MQTT user (empty for none): " user
-    if [ -n "$user" ] && [ -z "$pass" ]; then
+# With MQTT_HOST in the environment, all broker settings come from there:
+# an empty or unset MQTT_USER means no authentication.
+host=${MQTT_HOST-}; port=${MQTT_PORT-}; user=${MQTT_USER-}; pass=${MQTT_PASSWORD-}
+if [ -z "$host" ] && [ ! -f "$HOME_DIR/mosquitto_pub" ]; then
+    read -rp "MQTT broker host: " host
+    read -rp "MQTT broker port [1883]: " port
+    read -rp "MQTT user (empty for none): " user
+    if [ -n "$user" ]; then
         read -rsp "MQTT password: " pass
         echo
     fi
+fi
+if [ -n "$host" ]; then
     (
         umask 077
         {
@@ -57,8 +64,8 @@ fi
 batocera-services enable ha_batocera
 batocera-services stop ha_batocera >/dev/null 2>&1 || true
 batocera-services start ha_batocera
-echo "ha-batocera is running. Settings: $HOME_DIR/ha-batocera.conf," \
-    "log: /userdata/system/logs/ha-batocera.log"
+echo "ha-batocera $(cat "$HOME_DIR/VERSION") is running." \
+    "Settings: $HOME_DIR/ha-batocera.conf, log: /userdata/system/logs/ha-batocera.log"
 
 # What follows is advice only: nothing below is changed for you.
 
