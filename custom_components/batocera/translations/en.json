@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Batocera",
+        "description": "Connect a Batocera box running the ha-batocera daemon. The MQTT integration must be set up first.",
+        "data": {
+          "name": "Name",
+          "topic": "Topic prefix"
+        },
+        "data_description": {
+          "topic": "batocera/<device>, where <device> is the name set in ha-batocera.conf on the box."
+        }
+      }
+    },
+    "error": {
+      "invalid_topic": "Enter a topic without wildcards (+ or #)."
+    },
+    "abort": {
+      "already_configured": "This box is already configured."
+    }
+  }
+}
