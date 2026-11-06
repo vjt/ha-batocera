@@ -560,6 +560,88 @@ class RequestTest(unittest.TestCase):
                                "-of", "csv=p=0", "-"], input=jpeg, capture_output=True, check=True)
         self.assertEqual(size.stdout.decode().strip(), "256,192")
 
+    def start_line(self, rom="/userdata/roms/megadrive/Sonic.zip"):
+        return "\t".join(["gameStart", str(os.getpid()), "megadrive", "libretro",
+                          "genesisplusgx", rom])
+
+    def test_launch_when_idle(self):
+        with self.assertLogs(hb.log, "INFO"):
+            self.assertEqual(self.answer(op="launch", system="megadrive", game=self.SONIC),
+                             {"id": "0123abcd", "ok": True})
+        self.assertEqual(self.fake.launched, ["/userdata/roms/megadrive/Sonic.zip"])
+        self.assertIn("launch", self.d.timers)
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.on_line(self.start_line())  # the hook sees a normal launch
+        self.assertIsNone(self.d.launching)
+        self.assertNotIn("launch", self.d.timers)
+
+    def test_launch_refused(self):
+        self.assertEqual(self.answer(op="launch", game="/userdata/roms/x.zip")["error"],
+                         "unknown_game")
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.on_mqtt("batocera/test/lock ON")
+            self.assertEqual(self.answer(op="launch", game=self.SONIC)["error"], "locked")
+        self.assertEqual(self.fake.launched, [])
+
+    def test_launch_quits_the_running_game_first(self):
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.on_line(self.start_line(rom="/userdata/roms/megadrive/Bare.zip"))
+        self.fake.running = SYNTHETIC["games"]["megadrive"][3]
+        with mock.patch.object(hb.Daemon, "stop") as stop, self.assertLogs(hb.log, "INFO"):
+            self.assertEqual(self.request(op="launch", game=self.SONIC), [])
+            stop.assert_called_once()
+        # Not yet: EmulationStation still says a game runs.
+        self.assertEqual(self.fake.launched, [])
+        self.assertEqual(self.request(op="launch", game=self.BARE)[0][1]["error"], "busy")
+        self.clock.t += hb.LAUNCH_POLL
+        self.d.run_timers()
+        self.assertEqual(self.fake.launched, [])
+        self.fake.running = None
+        self.clock.t += hb.LAUNCH_POLL
+        self.d.run_timers()
+        self.assertEqual(self.fake.launched, ["/userdata/roms/megadrive/Sonic.zip"])
+        self.assertEqual(self.run.published()[-1][0], "batocera/test/resp/0123abcd")
+
+    def test_launch_gives_up_when_es_stays_busy(self):
+        self.fake.running = SYNTHETIC["games"]["megadrive"][3]
+        self.request(op="launch", game=self.SONIC)
+        with self.assertLogs(hb.log, "WARNING"):
+            for _ in range(hb.LAUNCH_IDLE_WAIT):
+                self.clock.t += hb.LAUNCH_POLL
+                self.d.run_timers()
+        self.assertEqual([json.loads(p)["error"] for t, p in self.run.published()], ["busy"])
+        self.assertEqual(self.fake.launched, [])
+        self.assertIsNone(self.d.launching)
+
+    def test_lock_while_waiting(self):
+        self.fake.running = SYNTHETIC["games"]["megadrive"][3]
+        self.request(op="launch", game=self.SONIC)
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.on_mqtt("batocera/test/lock ON")
+        self.fake.running = None
+        self.clock.t += hb.LAUNCH_POLL
+        self.d.run_timers()
+        self.assertEqual([json.loads(p)["error"] for t, p in self.run.published()], ["locked"])
+        self.assertEqual(self.fake.launched, [])
+
+    def test_launched_game_that_never_starts(self):
+        with self.assertLogs(hb.log, "INFO"):
+            self.request(op="launch", game=self.SONIC)
+        self.clock.t += hb.LAUNCH_START_WAIT
+        with self.assertLogs(hb.log, "WARNING") as logs:
+            self.d.run_timers()
+        self.assertIn("did not start", "\n".join(logs.output))
+        self.assertIsNone(self.d.launching)
+
+    def test_launch_with_es_down(self):
+        self.fake.close()
+        with self.assertLogs(hb.log, "WARNING"):
+            self.request(op="launch", game=self.SONIC)
+            self.clock.t += hb.LAUNCH_IDLE_WAIT
+            self.d.run_timers()
+        self.assertEqual([json.loads(p)["error"] for t, p in self.run.published()],
+                         ["es_unreachable"])
+
     def test_refresh(self):
         self.fake.games = dict(SYNTHETIC["games"], snes=[])
         with self.assertLogs(hb.log, "INFO"):

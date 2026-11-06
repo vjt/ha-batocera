@@ -53,6 +53,9 @@ ES_MAX = 32 * 1024 * 1024  # never read a bigger answer
 CATALOG_EVERY = 30 * 60  # seconds between catalog reads while no game runs
 CATALOG_RETRY = 30      # seconds before asking EmulationStation again
 CATALOG_AFTER_GAME = 10  # seconds after a game, for its play count to be saved
+LAUNCH_IDLE_WAIT = 10   # seconds for EmulationStation to be idle before a launch
+LAUNCH_POLL = 1         # seconds between asks whether it is
+LAUNCH_START_WAIT = 30  # seconds for a launched game to start
 
 log = logging.getLogger("ha-batocera")
 
@@ -357,6 +360,7 @@ class Daemon:
         self.roms = {}        # game id -> Rom, from the catalog
         self.published = {}   # system name -> hash, as on the broker
         self.index_sent = None  # the catalog/index payload on the broker
+        self.launching = None   # the launch in progress: {rid, rom, until}
 
     # --- timers -----------------------------------------------------------
 
@@ -449,6 +453,7 @@ class Daemon:
             return
         handler = {
             "cover": self.req_cover,
+            "launch": self.req_launch,
             "refresh": self.req_refresh,
         }.get(req.get("op"))
         if handler is None:
@@ -491,6 +496,55 @@ class Daemon:
         if jpeg is None:
             return self.respond(rid, "failed")
         self.respond(rid, jpeg=base64.b64encode(jpeg).decode())
+
+    def req_launch(self, rid, req):
+        """Quit the running game, wait for EmulationStation to be idle, then
+        have it launch the game, so that it and the hook see a normal launch."""
+        rom = self.find_rom(req)
+        if rom is None:
+            return self.respond(rid, "unknown_game")
+        if self.locked:
+            log.info("locked: not launching %s", rom.path)
+            return self.respond(rid, "locked")
+        if self.launching:
+            return self.respond(rid, "busy")
+        log.info("launch of %s requested", rom.path)
+        if self.game:
+            self.stop()
+        self.launching = {"rid": rid, "rom": rom, "until": self.now() + LAUNCH_IDLE_WAIT}
+        self.launch_step()
+
+    def launch_step(self):
+        job = self.launching
+        if self.locked:  # the lock came while waiting
+            self.launching = None
+            return self.respond(job["rid"], "locked")
+        try:
+            running = self.es.running()
+        except EsError as err:
+            log.warning("launch: %s", err)
+            running = None
+        if running is False:
+            try:
+                self.es.launch(job["rom"].path)
+            except EsError as err:
+                log.warning("launch of %s: %s", job["rom"].path, err)
+                self.launching = None
+                return self.respond(job["rid"], "es_unreachable")
+            self.respond(job["rid"])
+            job.update(rid=None, until=self.now() + LAUNCH_START_WAIT)
+            self.at("launch", LAUNCH_START_WAIT, self.launch_timeout)
+        elif self.now() >= job["until"]:
+            log.warning("launch of %s: EmulationStation %s", job["rom"].path,
+                        "is still busy" if running else "does not answer")
+            self.launching = None
+            self.respond(job["rid"], "busy" if running else "es_unreachable")
+        else:
+            self.at("launch", LAUNCH_POLL, self.launch_step)
+
+    def launch_timeout(self):
+        log.warning("%s did not start within %ds", self.launching["rom"].path, LAUNCH_START_WAIT)
+        self.launching = None
 
     def req_refresh(self, rid, req):
         log.info("catalog refresh requested")
@@ -559,6 +613,9 @@ class Daemon:
         if self.game:
             log.info("%s never ended", self.game["name"])
             self.end()
+        if self.launching and self.launching["rid"] is None:  # launched: done
+            self.launching = None
+            self.timers.pop("launch", None)
         name, image = game_info(rom)
         self.game = {
             "pid": pid,
