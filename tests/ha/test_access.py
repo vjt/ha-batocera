@@ -10,12 +10,6 @@ from conftest import TOPIC
 from test_entities import call, play, published
 
 
-@pytest.fixture
-async def kid(hass):
-    """A plain user: not an admin, but allowed to control entities."""
-    return await hass.auth.async_create_user("Kid", group_ids=["system-users"])
-
-
 async def stop_as(hass, user, service=("button", "press", "button.arcade_stop_game")):
     domain, name, entity_id = service
     await hass.services.async_call(

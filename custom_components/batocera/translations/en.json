@@ -84,5 +84,40 @@
         }
       }
     }
+  },
+  "exceptions": {
+    "unknown_game": {
+      "message": "{name} has no game {media_id} in its catalog."
+    },
+    "locked_manual": {
+      "message": "{name} is locked: no games until the manual lock is turned off."
+    },
+    "locked_window": {
+      "message": "{name} is locked: games are not allowed at this time of day."
+    },
+    "locked_limit": {
+      "message": "{name} is locked: today's playtime is used up."
+    },
+    "offline": {
+      "message": "{name} is not online."
+    },
+    "launch_busy": {
+      "message": "{name} could not launch {game}: the running game did not quit."
+    },
+    "launch_es_unreachable": {
+      "message": "{name} could not launch {game}: EmulationStation does not answer."
+    },
+    "launch_locked": {
+      "message": "{name} could not launch {game}: the box is locked."
+    },
+    "launch_timeout": {
+      "message": "{name} did not answer about launching {game}."
+    },
+    "launch_unknown_game": {
+      "message": "{name} could not launch {game}: it is not in the box's catalog any more."
+    },
+    "launch_failed": {
+      "message": "{name} could not launch {game}: {reason}."
+    }
   }
 }

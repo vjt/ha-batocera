@@ -13,11 +13,20 @@ from homeassistant.components.media_player import (
     MediaType,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import BatoceraConfigEntry
+from .box import BoxError
 from .browse import browse, parse_game
+from .const import DOMAIN
 from .entity import LiveEntity
+
+# Seconds a launch may take before the box answers: it quits the running
+# game first (up to 15 s) and waits for EmulationStation (up to 10 s).
+LAUNCH_TIMEOUT = 40
+# The daemon's refusals that have a message of their own.
+LAUNCH_ERRORS = ("busy", "es_unreachable", "locked", "timeout", "unknown_game")
 
 STATES = {
     "playing": MediaPlayerState.PLAYING,
@@ -39,7 +48,11 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
 
     @property
     def supported_features(self) -> MediaPlayerEntityFeature:
-        return MediaPlayerEntityFeature.STOP | MediaPlayerEntityFeature.BROWSE_MEDIA
+        return (
+            MediaPlayerEntityFeature.STOP
+            | MediaPlayerEntityFeature.BROWSE_MEDIA
+            | MediaPlayerEntityFeature.PLAY_MEDIA
+        )
 
     @property
     def state(self) -> MediaPlayerState | None:
@@ -93,6 +106,39 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
         game = parse_game(self.box, media_content_id)
         jpeg = await self.box.covers.async_get(game) if game else None
         return (jpeg, "image/jpeg") if jpeg else (None, None)
+
+    async def async_play_media(self, media_type: str, media_id: str, **kwargs: Any) -> None:
+        """Launch a game of the catalog, quitting the running one."""
+        await self.box.async_check_control(self._context)
+        name = {"name": self.box.name}
+        game = parse_game(self.box, media_id)
+        if game is None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="unknown_game",
+                translation_placeholders={**name, "media_id": media_id},
+            )
+        if self.box.lock_reason:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key=f"locked_{self.box.lock_reason}",
+                translation_placeholders=name,
+            )
+        if not self.box.online or self.box.state == "off":
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key="offline", translation_placeholders=name
+            )
+        try:
+            await self.box.async_request(
+                "launch", timeout=LAUNCH_TIMEOUT, system=game.system, game=game.id
+            )
+        except BoxError as err:
+            reason = err.reason if err.reason in LAUNCH_ERRORS else "failed"
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key=f"launch_{reason}",
+                translation_placeholders={**name, "game": game.name, "reason": err.reason},
+            ) from err
 
     async def async_media_stop(self) -> None:
         await self.box.async_check_control(self._context)

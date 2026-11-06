@@ -102,6 +102,13 @@ class FakeBox:
 
 
 @pytest.fixture
+async def kid(hass, hass_admin_user):
+    """A plain user: not an admin, but allowed to control entities. (The
+    admin is there first: the first user would become the owner.)"""
+    return await hass.auth.async_create_user("Kid", group_ids=["system-users"])
+
+
+@pytest.fixture
 def fake_box():
     box = FakeBox()
     with patch("custom_components.batocera.installer.asyncssh.connect", box.connect):
