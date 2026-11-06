@@ -122,6 +122,7 @@ class Box:
         self.catalog_hash: str | None = None
         self._system_games: dict[str, list[Game]] = {}
         self.games: dict[str, Game] = {}
+        self.covers: Any = None  # a covers.CoverCache, set up with the entry
 
         # Limits, set from the config entities. 0 minutes means no daily
         # limit; equal bounds mean no time window.

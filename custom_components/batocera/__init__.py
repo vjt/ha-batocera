@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
@@ -15,6 +16,7 @@ from homeassistant.helpers.storage import Store
 from . import installer
 from .box import Box
 from .const import CONF_PRIVATE_KEY, DOMAIN
+from .covers import CoverCache
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
@@ -35,6 +37,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> 
     if not await mqtt.async_wait_for_mqtt_client(hass):
         raise ConfigEntryNotReady("MQTT is not available")
     box = Box(hass, entry)
+    box.covers = CoverCache(hass, box, _covers_dir(hass, entry))
+    hass.async_add_executor_job(box.covers.prune)  # covers more than a week old
     if CONF_PRIVATE_KEY in entry.data:  # installed from Home Assistant
         _keep_daemon_updated(hass, entry, box)
     await box.async_setup(entry)
@@ -49,7 +53,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) ->
 
 async def async_remove_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> None:
     await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}").async_remove()
+    await hass.async_add_executor_job(CoverCache.remove, _covers_dir(hass, entry))
     ir.async_delete_issue(hass, DOMAIN, _issue_id(entry))
+
+
+def _covers_dir(hass: HomeAssistant, entry: ConfigEntry) -> Path:
+    return Path(hass.config.cache_path(DOMAIN, entry.entry_id))
 
 
 def _issue_id(entry: ConfigEntry) -> str:
