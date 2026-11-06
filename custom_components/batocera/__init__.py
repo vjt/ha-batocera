@@ -71,6 +71,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> 
     hass.async_add_executor_job(box.covers.prune)  # covers more than a week old
     if CONF_PRIVATE_KEY in entry.data:  # installed from Home Assistant
         _keep_daemon_updated(hass, entry, box)
+    _warn_about_public_web(hass, entry, box)
     await box.async_setup(entry)
     entry.runtime_data = box
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -97,6 +98,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) ->
     await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}").async_remove()
     await hass.async_add_executor_job(CoverCache.remove, _covers_dir(hass, entry))
     ir.async_delete_issue(hass, DOMAIN, _issue_id(entry))
+    ir.async_delete_issue(hass, DOMAIN, _public_web_issue_id(entry))
 
 
 def _covers_dir(hass: HomeAssistant, entry: ConfigEntry) -> Path:
@@ -105,6 +107,38 @@ def _covers_dir(hass: HomeAssistant, entry: ConfigEntry) -> Path:
 
 def _issue_id(entry: ConfigEntry) -> str:
     return f"daemon_{entry.entry_id}"
+
+
+def _public_web_issue_id(entry: ConfigEntry) -> str:
+    return f"public_web_{entry.entry_id}"
+
+
+def _warn_about_public_web(hass: HomeAssistant, entry: ConfigEntry, box: Box) -> None:
+    """A Repair issue while the box says EmulationStation's web API is open
+    to the network. It only explains how to close it: the box's settings
+    are the owner's to change."""
+    shown: bool | None = None
+
+    @callback
+    def check() -> None:
+        nonlocal shown
+        if box.public_web is None or box.public_web == shown:
+            return
+        shown = box.public_web
+        if shown:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                _public_web_issue_id(entry),
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="public_web_access",
+                translation_placeholders={"name": entry.title},
+            )
+        else:
+            ir.async_delete_issue(hass, DOMAIN, _public_web_issue_id(entry))
+
+    entry.async_on_unload(box.add_listener(check))
 
 
 def _keep_daemon_updated(hass: HomeAssistant, entry: ConfigEntry, box: Box) -> None:

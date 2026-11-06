@@ -94,3 +94,24 @@ async def test_removing_the_entry_removes_its_issue(hass, fake_box, setup):
     assert issue(hass, setup).translation_key == "update_failed"
     await hass.config_entries.async_remove(setup.entry_id)
     assert issue(hass, setup) is None
+
+
+def public_web_issue(hass, entry):
+    return ir.async_get(hass).async_get_issue(DOMAIN, f"public_web_{entry.entry_id}")
+
+
+async def test_public_web_access_is_a_warning_only(hass, fake_box, setup):
+    await publish(hass, public_web_access="ON")
+    found = public_web_issue(hass, setup)
+    assert found.translation_key == "public_web_access"
+    assert found.severity == ir.IssueSeverity.WARNING
+    assert not found.is_fixable
+    assert found.translation_placeholders == {"name": "Arcade"}
+    assert not [c for c, _ in fake_box.runs if "PublicWebAccess" in c]  # nothing touched
+    await publish(hass, public_web_access="")  # not known: left as it is
+    assert public_web_issue(hass, setup) is not None
+    await publish(hass, public_web_access="OFF")
+    assert public_web_issue(hass, setup) is None
+    await publish(hass, public_web_access="ON")
+    await hass.config_entries.async_remove(setup.entry_id)
+    assert public_web_issue(hass, setup) is None

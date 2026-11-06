@@ -102,8 +102,9 @@ if grep -qs '"PublicWebAccess" value="true"' "$ES/es_settings.cfg"; then
 
 NOTE: EmulationStation's web API (port 1234) is open to the whole network,
 without authentication (PublicWebAccess=true): anyone on the LAN can launch or
-kill games and send input. ha-batocera does not use it. To restrict it to the
-box itself, with EmulationStation stopped (it rewrites its settings on exit):
+kill games and send input. ha-batocera uses it from the box itself only, and
+Home Assistant shows a warning about it under Settings, Repairs. To restrict it
+to the box, with EmulationStation stopped (it rewrites its settings on exit):
 
     /etc/init.d/S31emulationstation stop
     sed -i 's/"PublicWebAccess" value="true"/"PublicWebAccess" value="false"/' \\

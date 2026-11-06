@@ -72,6 +72,10 @@
     "update_failed": {
       "title": "{name}: cannot update ha-batocera",
       "description": "Home Assistant could not check or update the ha-batocera daemon on {name} ({host}): {error}\n\nIt tries again the next time the box comes online, or when the integration is reloaded. If the box no longer accepts Home Assistant's SSH key, reconfigure the Batocera integration for this box with the root password."
+    },
+    "public_web_access": {
+      "title": "{name}: EmulationStation's web API is open to the network",
+      "description": "EmulationStation on {name} accepts commands on port 1234 from the whole network, without authentication: its PublicWebAccess setting is on. Anyone on your network can launch or quit games and send input to them. The limits set here still stop a game launched while the box is locked, but only once it has started. ha-batocera itself uses this API from the box only, and never changes this setting.\n\nTo restrict the API to the box, log in to the box as root and run these commands, which stop EmulationStation while the setting changes (it rewrites its settings when it exits), then start it again:\n\n```\n/etc/init.d/S31emulationstation stop\nsed -i 's/\"PublicWebAccess\" value=\"true\"/\"PublicWebAccess\" value=\"false\"/' /userdata/system/configs/emulationstation/es_settings.cfg\n/etc/init.d/S31emulationstation start\n```\n\nThis warning goes away by itself once the box reports the setting off: it checks when the daemon starts and every 30 minutes while no game runs."
     }
   },
   "options": {

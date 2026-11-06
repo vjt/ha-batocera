@@ -387,6 +387,7 @@ class Daemon:
         self.published = {}   # system name -> hash, as on the broker
         self.index_sent = None  # the catalog/index payload on the broker
         self.launching = None   # the launch in progress: {rid, rom, until}
+        self.public_web = None  # what public_web_access says on the broker
 
     # --- timers -----------------------------------------------------------
 
@@ -620,7 +621,9 @@ class Daemon:
     def refresh_catalog(self, only=None):
         """Read the catalog from EmulationStation, all of it or one system,
         and publish what changed. Returns whether EmulationStation answered."""
-        kid_mode = self.settings().get("UIMode") == "Kid"
+        settings = self.settings()
+        self.publish_public_web(settings)
+        kid_mode = settings.get("UIMode") == "Kid"
         try:
             systems = self.es.systems()
         except EsError as err:
@@ -649,6 +652,14 @@ class Daemon:
         if only is None:
             self.at("catalog", CATALOG_EVERY, self.scheduled_catalog)
         return True
+
+    def publish_public_web(self, settings):
+        """Whether EmulationStation's web API is open to the network: Home
+        Assistant warns about it. Empty when the settings cannot be read."""
+        value = on_off(settings.get("PublicWebAccess") == "true") if settings else ""
+        if value != self.public_web:
+            self.public_web = value
+            self.pub("public_web_access", value)
 
     def scheduled_catalog(self):
         if self.game:  # leave EmulationStation alone during a game

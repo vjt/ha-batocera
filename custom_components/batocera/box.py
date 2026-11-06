@@ -114,6 +114,7 @@ class Box:
         self.version: str | None = None
         self.game_id: str | None = None
         self.pausable: bool | None = None  # None: not known
+        self.public_web: bool | None = None  # EmulationStation's API open to the network
         self.paused = False
 
         # The catalog: systems as listed by catalog/index, their games, and
@@ -227,6 +228,8 @@ class Box:
             self.pausable = {"ON": True, "OFF": False}.get(text)
         elif leaf == "paused":
             self.paused = text == "ON"
+        elif leaf == "public_web_access":
+            self.public_web = {"ON": True, "OFF": False}.get(text)
         elif leaf == "started_at":
             self.started_at = dt_util.parse_datetime(text) if text else None
         elif leaf == "last_session":

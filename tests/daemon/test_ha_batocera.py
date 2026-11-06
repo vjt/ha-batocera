@@ -370,7 +370,7 @@ class CatalogDaemonTest(unittest.TestCase):
                            es=hb.EsApi(self.fake.url), settings=lambda: self.settings)
 
     def published(self):
-        out = self.run.published()
+        out = [(t, p) for t, p in self.run.published() if not t.endswith("/public_web_access")]
         self.run.calls.clear()
         return out
 
@@ -433,6 +433,26 @@ class CatalogDaemonTest(unittest.TestCase):
         self.settings = {"UIMode": "Kid"}
         self.refresh()
         self.assertEqual(list(self.d.catalog), ["megadrive"])
+
+    def test_public_web_access(self):
+        def flags():
+            out = [p for t, p in self.run.published() if t.endswith("/public_web_access")]
+            self.run.calls.clear()
+            return out
+
+        self.settings = {"PublicWebAccess": "true", "UIMode": "Full"}
+        self.refresh()
+        self.assertEqual(flags(), ["ON"])
+        self.refresh()
+        self.assertEqual(flags(), [])  # only when it changes
+        self.settings = {"UIMode": "Full"}  # ES's default: off
+        self.refresh()
+        self.assertEqual(flags(), ["OFF"])
+        self.settings = {}  # unreadable: not known
+        self.fake.close()  # and told even when EmulationStation is down
+        with self.assertLogs(hb.log, "WARNING"):
+            self.d.refresh_catalog()
+        self.assertEqual(flags(), [None])
 
     def test_es_down_retries(self):
         self.fake.close()
