@@ -266,6 +266,13 @@ class BatoceraCard extends HTMLElement {
     return 12;
   }
 
+  connectedCallback() {
+    // Back on the page: the clock ticks again, the tiles' covers come again.
+    if (!this._built || !this._hass) return;
+    this._renderGrid();
+    this._update();
+  }
+
   disconnectedCallback() {
     clearInterval(this._ticker);
     this._ticker = undefined;
@@ -274,6 +281,8 @@ class BatoceraCard extends HTMLElement {
     if (this._observer) this._observer.disconnect();
     this._observer = undefined;
     this._queue = [];
+    for (const src of (this._blobs || new Map()).values()) URL.revokeObjectURL(src);
+    if (this._blobs) this._blobs.clear();
   }
 
   set hass(hass) {
@@ -476,7 +485,7 @@ class BatoceraCard extends HTMLElement {
     art.classList.remove("loaded", "none");
     this.$.simg.removeAttribute("src");
     if (item.thumbnail) {
-      this._cover(art, this.$.simg, item.thumbnail);
+      this._cover(art, this.$.simg, item.thumbnail, false);
       this._pump();
     } else {
       art.classList.add("none");
@@ -577,7 +586,7 @@ class BatoceraCard extends HTMLElement {
   // Covers come through Home Assistant's image proxy, with the user's token:
   // a few at a time, once each, and only for tiles in sight when the
   // browser can tell.
-  _cover(art, img, url) {
+  _cover(art, img, url, lazy = true) {
     const key = url.split("?")[0];
     const known = this._blobs.get(key);
     if (known) {
@@ -586,7 +595,7 @@ class BatoceraCard extends HTMLElement {
       return;
     }
     const job = { art, img, url, key };
-    if (typeof IntersectionObserver === "undefined") {
+    if (!lazy || typeof IntersectionObserver === "undefined") {
       this._queue.push(job);  // fetched once the tile is on the page
       return;
     }

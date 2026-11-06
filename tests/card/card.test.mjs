@@ -77,6 +77,7 @@ async function mount(states = idleStates(), { control = true, ws = {}, folders =
   window.eval(source);
   let blobs = 0;
   window.URL.createObjectURL = () => `blob:cover-${++blobs}`;
+  window.URL.revokeObjectURL = () => {};
   const calls = [];
   const wsCalls = [];
   const fetched = [];
@@ -282,6 +283,18 @@ test("covers through the proxy, with the user's auth, once each", async () => {
   await flush();
   assert.equal(t.fetched.length, 3);
   assert.ok(art("Sonic the Hedgehog").classList.contains("loaded"));
+});
+
+test("covers are fetched again when the card comes back on the page", async () => {
+  const t = await mount();
+  await t.open("Super Nintendo");
+  assert.equal(t.fetched.length, 1);
+  t.card.remove();
+  t.window.document.body.appendChild(t.card);
+  await flush();
+  await flush();
+  assert.equal(t.fetched.length, 2);
+  assert.ok(t.$(".grid .tile .art").classList.contains("loaded"));
 });
 
 test("covers: a few at a time", async () => {
