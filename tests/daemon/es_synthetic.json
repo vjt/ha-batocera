@@ -1,0 +1,58 @@
+{
+  "_note": "SYNTHETIC: written from EmulationStation's source (HttpApi.cpp), not captured from a box. Replace with real /systems and /systems/<name>/games answers once captured.",
+  "systems": [
+    {"name": "megadrive", "fullname": "Sega Mega Drive", "manufacturer": "Sega",
+     "releaseYear": "1988", "hardwareType": "console", "visible": "true",
+     "collection": "false", "gamesystem": "true", "groupsystem": "false",
+     "totalGames": 5, "visibleGames": 4, "logo": "/systems/megadrive/logo"},
+    {"name": "snes", "fullname": "Super Nintendo", "manufacturer": "Nintendo",
+     "releaseYear": "1990", "visible": "true", "collection": "false",
+     "gamesystem": "true", "groupsystem": "false", "totalGames": 1,
+     "visibleGames": 1, "logo": "/systems/snes/logo"},
+    {"name": "favorites", "fullname": "Favorites", "visible": "true",
+     "collection": "true", "gamesystem": "false", "groupsystem": "false",
+     "totalGames": 1, "visibleGames": 1},
+    {"name": "imageviewer", "fullname": "Screenshots", "visible": "true",
+     "collection": "false", "gamesystem": "false", "groupsystem": "false",
+     "totalGames": 3, "visibleGames": 3},
+    {"name": "n64", "fullname": "Nintendo 64", "manufacturer": "Nintendo",
+     "releaseYear": "1996", "visible": "false", "collection": "false",
+     "gamesystem": "true", "groupsystem": "false", "totalGames": 2,
+     "visibleGames": 0},
+    {"name": "bad/name", "fullname": "Not a topic", "visible": "true",
+     "collection": "false", "gamesystem": "true", "groupsystem": "false",
+     "totalGames": 1, "visibleGames": 1}
+  ],
+  "games": {
+    "megadrive": [
+      {"id": "a0", "path": "/userdata/roms/megadrive/Sonic.zip", "name": "Sonic the Hedgehog",
+       "systemName": "megadrive", "releasedate": "19910623T000000", "genre": "Platform",
+       "players": "1", "favorite": "true", "playcount": "12", "lastplayed": "20261102T183000",
+       "kidgame": "true",
+       "thumbnail": "/systems/megadrive/games/a0/media/thumbnail",
+       "image": "/systems/megadrive/games/a0/media/image"},
+      {"id": "a1", "path": "/userdata/roms/megadrive/Streets of Rage.zip", "name": "Streets of Rage",
+       "systemName": "megadrive", "releasedate": "19910802T000000", "genre": "Beat'em up",
+       "players": "1-2", "image": "/systems/megadrive/games/a1/media/image"},
+      {"id": "a2", "path": "/userdata/roms/megadrive/Hidden.zip", "name": "Hidden",
+       "systemName": "megadrive", "hidden": "true"},
+      {"id": "a3", "path": "/userdata/roms/megadrive/Bare.zip", "name": "Bare",
+       "systemName": "megadrive", "favorite": "false", "kidgame": "false"},
+      {"id": "a4", "path": "/userdata/roms/megadrive/Comix Zone.zip", "name": "Comix Zone",
+       "systemName": "megadrive", "releasedate": "not a date", "playcount": "x",
+       "kidgame": "true"}
+    ],
+    "snes": [
+      {"id": "b0", "path": "/userdata/roms/snes/Mario World.sfc", "name": "Super Mario World",
+       "systemName": "snes", "releasedate": "19901121T000000", "genre": "Platform",
+       "players": "1-2", "thumbnail": "/systems/snes/games/b0/media/thumbnail"}
+    ],
+    "n64": [
+      {"id": "c0", "path": "/userdata/roms/n64/Mario 64.z64", "name": "Super Mario 64",
+       "systemName": "n64"}
+    ],
+    "bad/name": [
+      {"id": "d0", "path": "/userdata/roms/x/y.zip", "name": "Y", "systemName": "bad/name"}
+    ]
+  }
+}

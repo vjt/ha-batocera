@@ -5,13 +5,17 @@
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -30,6 +34,72 @@ GAMELIST = """<?xml version="1.0"?>
   <game><path>./Bare.zip</path><name>Bare</name></game>
 </gameList>
 """
+
+
+# EmulationStation's answers, made up from its source: see the file's _note.
+SYNTHETIC = json.loads(Path(__file__).with_name("es_synthetic.json").read_text())
+
+
+class FakeEs:
+    """EmulationStation's web API on a loopback port, answering from
+    es_synthetic.json."""
+
+    def __init__(self):
+        self.running = None   # the running game's JSON, or None
+        self.launched = []    # bodies of POST /launch
+        self.media = {}       # path -> bytes
+        self.requests = []    # (method, path)
+        self.raw = []         # paths as sent, quoted
+        self.systems = SYNTHETIC["systems"]
+        self.games = SYNTHETIC["games"]
+        fake = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                fake.handle(self, None)
+
+            def do_POST(self):
+                fake.handle(self, self.rfile.read(int(self.headers.get("Content-Length", 0))))
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def handle(self, handler, body):
+        path = urllib.parse.unquote(handler.path)
+        self.requests.append((handler.command, path))
+        self.raw.append(handler.path)
+        status, out = self.answer(handler.command, path, body)
+        handler.send_response(status)
+        handler.send_header("Content-Length", str(len(out)))
+        handler.end_headers()
+        handler.wfile.write(out)
+
+    def answer(self, method, path, body):
+        if method == "POST":
+            if path == "/launch":
+                self.launched.append(body.decode())
+                return 200, b""
+            return 404, b""
+        if path == "/systems":
+            return 200, json.dumps(self.systems).encode()
+        if path == "/runningGame":
+            if self.running:
+                return 200, json.dumps(self.running).encode()
+            return 201, b'{"msg":"NO GAME RUNNING"}'
+        match = re.fullmatch(r"/systems/(.+)/games", path)
+        if match and match[1] in self.games:
+            return 200, json.dumps(self.games[match[1]]).encode()
+        if path in self.media:
+            return 200, self.media[path]
+        return 404, b""
 
 
 class Recorder:
@@ -156,6 +226,53 @@ class CoverTest(TempDirTest):
     def test_missing_image(self):
         with self.assertLogs(hb.log, "WARNING"):
             self.assertIsNone(hb.make_cover(str(self.tmp / "nope.png")))
+
+
+class EsApiTest(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeEs()
+        self.addCleanup(self.fake.close)
+        self.es = hb.EsApi(self.fake.url)
+
+    def test_default_is_loopback_by_address(self):
+        # "localhost" may resolve to ::1, which EmulationStation refuses.
+        self.assertEqual(hb.EsApi().base, "http://127.0.0.1:1234")
+
+    def test_systems_and_games(self):
+        self.assertEqual([s["name"] for s in self.es.systems()][:2], ["megadrive", "snes"])
+        self.assertEqual(self.es.games("snes")[0]["name"], "Super Mario World")
+        with self.assertRaises(hb.EsError):
+            self.es.games("nope")  # 404
+
+    def test_running(self):
+        self.assertIs(self.es.running(), False)  # 201, NO GAME RUNNING
+        self.fake.running = SYNTHETIC["games"]["snes"][0]
+        self.assertIs(self.es.running(), True)
+
+    def test_launch_posts_the_path(self):
+        self.es.launch("/userdata/roms/snes/Mario World.sfc")
+        self.assertEqual(self.fake.launched, ["/userdata/roms/snes/Mario World.sfc"])
+
+    def test_media(self):
+        self.fake.media["/systems/snes/games/b0/media/thumbnail"] = b"PNG"
+        self.assertEqual(self.es.media("snes", "b0", "thumbnail"), b"PNG")
+        self.assertIsNone(self.es.media("snes", "b0", "image"))
+        self.assertEqual(self.fake.requests[-1], ("GET", "/systems/snes/games/b0/media/image"))
+
+    def test_path_parts_are_quoted(self):
+        self.assertIsNone(self.es.media("a b", "x/../y", "image"))
+        self.assertEqual(self.fake.raw[-1], "/systems/a%20b/games/x%2F..%2Fy/media/image")
+
+    def test_proxies_are_ignored(self):
+        with mock.patch.dict(os.environ, {"http_proxy": "http://proxy.invalid:9", "no_proxy": ""}):
+            self.assertEqual(len(hb.EsApi(self.fake.url).systems()), len(SYNTHETIC["systems"]))
+
+    def test_down(self):
+        self.fake.close()
+        with self.assertRaises(hb.EsError):
+            self.es.systems()
+        with self.assertRaises(hb.EsError):
+            self.es.running()
 
 
 class DaemonTest(TempDirTest):

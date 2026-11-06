@@ -20,9 +20,12 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 HOME = Path(os.environ.get("HA_BATOCERA_HOME", "/userdata/system/ha-batocera"))
 FIFO = Path(os.environ.get("HA_BATOCERA_FIFO", "/var/run/ha-batocera.fifo"))
@@ -33,6 +36,11 @@ STOP_GRACE = 5          # seconds the launcher gets to exit after --emukill
 SUB_RETRY = 30          # seconds before restarting a dead mosquitto_sub
 COVER_SIZE = 512        # cover bounding box, pixels
 COVER_MAX = 500 * 1024  # never publish a bigger cover
+# EmulationStation's web API, by address: "localhost" may resolve to ::1,
+# which it refuses. Only ever used on the box itself.
+ES_URL = "http://127.0.0.1:1234"
+ES_TIMEOUT = 10         # seconds for one call to EmulationStation
+ES_MAX = 32 * 1024 * 1024  # never read a bigger answer
 
 log = logging.getLogger("ha-batocera")
 
@@ -114,6 +122,70 @@ def make_cover(image, run=subprocess.run):
                     image, out.returncode, len(out.stdout or b""))
         return None
     return out.stdout
+
+
+class EsError(Exception):
+    """EmulationStation did not answer, or not as expected."""
+
+
+class EsApi:
+    """EmulationStation's web API, on the box's loopback address only.
+
+    What the answers look like comes from EmulationStation's source
+    (HttpApi.cpp), not from a box: keep their reading in this class.
+    """
+
+    def __init__(self, base=ES_URL, opener=None):
+        self.base = base
+        # No proxy from the environment: this is the box talking to itself.
+        self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def request(self, path, data=None):
+        """(HTTP status, body); EsError if nothing answers."""
+        req = urllib.request.Request(self.base + path, data=data,
+                                     method="GET" if data is None else "POST")
+        try:
+            with self.opener.open(req, timeout=ES_TIMEOUT) as resp:
+                return resp.status, resp.read(ES_MAX)
+        except urllib.error.HTTPError as err:
+            err.close()
+            return err.code, b""
+        except (OSError, ValueError) as err:  # URLError and timeouts are OSErrors
+            raise EsError(f"{path}: {err}") from err
+
+    def json(self, path):
+        status, body = self.request(path)
+        if status != 200:
+            raise EsError(f"{path}: HTTP {status}")
+        try:
+            return json.loads(body)
+        except ValueError as err:
+            raise EsError(f"{path}: {err}") from err
+
+    def systems(self):
+        return self.json("/systems")
+
+    def games(self, system):
+        return self.json(f"/systems/{quote(system, safe='')}/games")
+
+    def media(self, system, es_id, key):
+        """A game's media file (key: thumbnail, image...), or None."""
+        path = f"/systems/{quote(system, safe='')}/games/{quote(es_id, safe='')}/media/{key}"
+        status, body = self.request(path)
+        return body if status == 200 and body else None
+
+    def running(self):
+        """Whether a game runs: 200 with the game, 201 when there is none."""
+        status, _ = self.request("/runningGame")
+        if status not in (200, 201):
+            raise EsError(f"/runningGame: HTTP {status}")
+        return status == 200
+
+    def launch(self, path):
+        """Ask EmulationStation to launch a ROM, as if picked in its menus."""
+        status, _ = self.request("/launch", path.encode())
+        if not 200 <= status < 300:
+            raise EsError(f"/launch: HTTP {status}")
 
 
 def starttime(pid):
