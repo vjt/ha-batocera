@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 import asyncssh
 import pytest
+from homeassistant.components import mqtt
+from homeassistant.core import callback
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_mqtt_message
 
 from custom_components.batocera import installer
@@ -143,3 +145,39 @@ async def publish_catalog(hass, index=INDEX, rows=ROWS):
         )
     async_fire_mqtt_message(hass, f"{TOPIC}/catalog/index", json.dumps(index))
     await hass.async_block_till_done()
+
+
+class FakeDaemon:
+    """Answers the integration's requests on req as the daemon would.
+
+    answers maps an op to the answer's fields (ok, error, ...), or to a
+    function of the request returning them; None leaves it unanswered.
+    """
+
+    def __init__(self, hass) -> None:
+        self.hass = hass
+        self.requests: list[dict] = []
+        self.answers: dict = {}
+
+    @callback
+    def on_request(self, msg) -> None:
+        req = json.loads(msg.payload)
+        self.requests.append(req)
+        answer = self.answers.get(req["op"])
+        if callable(answer):
+            answer = answer(req)
+        if answer is not None:
+            self.hass.loop.call_soon(
+                async_fire_mqtt_message,
+                self.hass,
+                f"{TOPIC}/resp/{req['id']}",
+                json.dumps({"id": req["id"], **answer}),
+            )
+
+
+@pytest.fixture
+async def daemon(hass, mqtt_mock):
+    fake = FakeDaemon(hass)
+    unsubscribe = await mqtt.async_subscribe(hass, f"{TOPIC}/req", fake.on_request)
+    yield fake
+    unsubscribe()

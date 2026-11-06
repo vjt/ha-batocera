@@ -1,9 +1,13 @@
 """The catalog, covers, launch and pause, with the box faked over MQTT."""
 
+import asyncio
 import gzip
 import json
 
+import pytest
 from pytest_homeassistant_custom_component.common import async_fire_mqtt_message
+
+from custom_components.batocera.box import BoxError
 
 from conftest import BARE, INDEX, MARIO, ROWS, SONIC, SOR, TOPIC, publish_catalog
 
@@ -74,3 +78,35 @@ async def test_new_leaves(hass, mqtt_mock, setup):
     fire(hass, "pausable", "OFF")
     await hass.async_block_till_done()
     assert box.pausable is False
+
+
+async def test_request_and_answer(hass, setup, daemon):
+    box = setup.runtime_data
+    daemon.answers["refresh"] = {"ok": True}
+    assert (await box.async_request("refresh"))["ok"] is True
+    [req] = daemon.requests
+    assert req["op"] == "refresh"
+    assert len(req["id"]) == 16 and int(req["id"], 16) >= 0
+
+    daemon.answers["cover"] = lambda req: {"ok": False, "error": "no_cover"}
+    with pytest.raises(BoxError) as err:
+        await box.async_request("cover", system="megadrive", game=BARE)
+    assert err.value.reason == "no_cover"
+    assert daemon.requests[-1] == {"id": daemon.requests[-1]["id"], "op": "cover",
+                                   "system": "megadrive", "game": BARE}
+
+
+async def test_unanswered_request_times_out(hass, setup, daemon, freezer):
+    box = setup.runtime_data
+    task = hass.async_create_task(box.async_request("refresh", timeout=5))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    freezer.tick(6)  # time is frozen in these tests: move it past the timeout
+    with pytest.raises(BoxError) as err:
+        await task
+    assert err.value.reason == "timeout"
+    assert box._requests == {}
+    # A late answer, or one to someone else, is ignored.
+    fire(hass, f"resp/{daemon.requests[0]['id']}", json.dumps({"ok": True}))
+    fire(hass, "resp/0123abcd", "not json")
+    await hass.async_block_till_done()

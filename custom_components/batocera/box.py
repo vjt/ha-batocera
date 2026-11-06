@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 import hashlib
@@ -9,6 +10,7 @@ import json
 import logging
 import math
 import re
+import secrets
 from typing import Any, NamedTuple
 import zlib
 
@@ -30,6 +32,15 @@ CATALOG_MAX = 32 * 1024 * 1024  # never inflate a catalog message beyond this
 GAME_ID = re.compile(r"^[0-9a-f]{12}$")
 SYSTEM_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 FAVOURITE, HAS_COVER = 1, 2  # row flags, as the daemon sets them
+
+
+class BoxError(Exception):
+    """A request the box refused or did not answer. reason is the daemon's
+    error (see the README, "Requests"), or "timeout"."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class Game(NamedTuple):
@@ -125,6 +136,7 @@ class Box:
         self._stop_sent: datetime | None = None
         self._warned: datetime | None = None
         self._listeners: list[Callable[[], None]] = []
+        self._requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._store: Store[dict] = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
 
     async def async_setup(self, entry: ConfigEntry) -> None:
@@ -145,6 +157,11 @@ class Box:
         entry.async_on_unload(
             await mqtt.async_subscribe(
                 self.hass, f"{self.prefix}/catalog/#", self._on_catalog, qos=1, encoding=None
+            )
+        )
+        entry.async_on_unload(
+            await mqtt.async_subscribe(
+                self.hass, f"{self.prefix}/resp/+", self._on_response, qos=1, encoding=None
             )
         )
         entry.async_on_unload(
@@ -239,6 +256,37 @@ class Box:
         self.hass.async_create_task(
             mqtt.async_publish(self.hass, f"{self.prefix}/{leaf}", payload, 1, retain)
         )
+
+    async def async_request(self, op: str, timeout: float = 10, **fields: Any) -> dict[str, Any]:
+        """Send a request on req and wait for its answer on resp/<id>.
+        Raises BoxError when the box refuses or does not answer in time."""
+        rid = secrets.token_hex(8)
+        future: asyncio.Future[dict[str, Any]] = self.hass.loop.create_future()
+        self._requests[rid] = future
+        try:
+            await mqtt.async_publish(
+                self.hass, f"{self.prefix}/req", json.dumps({"id": rid, "op": op, **fields}), 1
+            )
+            async with asyncio.timeout(timeout):
+                answer = await future
+        except TimeoutError:
+            raise BoxError("timeout") from None
+        finally:
+            self._requests.pop(rid, None)
+        if answer.get("ok") is not True:
+            raise BoxError(str(answer.get("error") or "failed"))
+        return answer
+
+    @callback
+    def _on_response(self, msg: ReceiveMessage) -> None:
+        future = self._requests.get(msg.topic.rsplit("/", 1)[1])
+        if future is None or future.done():
+            return  # not ours, or too late
+        try:
+            answer = json.loads(msg.payload)
+        except ValueError:
+            answer = None
+        future.set_result(answer if isinstance(answer, dict) else {"error": "bad_answer"})
 
     async def async_stop(self) -> None:
         await mqtt.async_publish(self.hass, f"{self.prefix}/cmd", "stop", 1, False)
