@@ -10,6 +10,7 @@ Game events come from the launch hook, one tab-separated line per event on a
 FIFO: event, launcher pid, system, emulator, core, rom path.
 """
 
+import gzip
 import hashlib
 import json
 import logging
@@ -44,6 +45,9 @@ COVER_MAX = 500 * 1024  # never publish a bigger cover
 ES_URL = "http://127.0.0.1:1234"
 ES_TIMEOUT = 10         # seconds for one call to EmulationStation
 ES_MAX = 32 * 1024 * 1024  # never read a bigger answer
+CATALOG_EVERY = 30 * 60  # seconds between catalog reads while no game runs
+CATALOG_RETRY = 30      # seconds before asking EmulationStation again
+CATALOG_AFTER_GAME = 10  # seconds after a game, for its play count to be saved
 
 log = logging.getLogger("ha-batocera")
 
@@ -329,14 +333,42 @@ def descendants(pid):
 
 
 class Daemon:
-    def __init__(self, base, env, run=subprocess.run, now=time.time):
+    def __init__(self, base, env, run=subprocess.run, now=time.time, es=None,
+                 settings=es_settings):
         self.base = base
         self.env = env
         self.run = run
         self.now = now
+        self.es = es or EsApi()
+        self.settings = settings
         self.game = None      # the session being played, or None
         self.locked = False   # retained by Home Assistant on <base>/lock
         self.stopping = False
+        self.timers = {}      # name -> (when, function)
+        self.catalog = {}     # system name -> SystemCatalog, as last read
+        self.roms = {}        # game id -> Rom, from the catalog
+        self.published = {}   # system name -> hash, as on the broker
+        self.index_sent = None  # the catalog/index payload on the broker
+
+    # --- timers -----------------------------------------------------------
+
+    def at(self, name, delay, function):
+        """Run function in delay seconds, replacing the timer of that name."""
+        self.timers[name] = (self.now() + delay, function)
+
+    def run_timers(self):
+        for name, timer in sorted(self.timers.items(), key=lambda item: item[1][0]):
+            # A timer that ran may have replaced or cancelled this one.
+            if timer[0] <= self.now() and self.timers.get(name) == timer:
+                del self.timers[name]
+                timer[1]()
+
+    def timeout(self):
+        """How long the main loop may wait for input."""
+        first = min((when for when, _ in self.timers.values()), default=None)
+        if first is None:
+            return CHECK_EVERY
+        return max(0.0, min(CHECK_EVERY, first - self.now()))
 
     # --- MQTT out ---------------------------------------------------------
 
@@ -372,10 +404,66 @@ class Daemon:
         for leaf, payload in [*fields, state] if g else [state, *fields]:
             self.pub(leaf, payload)
 
+    def publish_catalog(self):
+        """Publish the systems that changed, then the index, then clear the
+        systems that are gone."""
+        for name, system in self.catalog.items():
+            if self.published.get(name) != system.entry["hash"]:
+                self.pub(f"catalog/system/{name}", gzip.compress(system.data, mtime=0))
+        index = json.dumps([s.entry for s in self.catalog.values()],
+                           separators=(",", ":"), ensure_ascii=False)
+        if index != self.index_sent:
+            self.pub("catalog/index", index)
+            self.index_sent = index
+        for name in sorted(set(self.published) - set(self.catalog)):
+            self.pub(f"catalog/system/{name}", "")
+        self.published = {name: s.entry["hash"] for name, s in self.catalog.items()}
+
     def publish_all(self):
         self.pub("availability", "online")
         self.pub("version", VERSION)
         self.publish_game()
+
+    # --- the catalog --------------------------------------------------------
+
+    def refresh_catalog(self, only=None):
+        """Read the catalog from EmulationStation, all of it or one system,
+        and publish what changed. Returns whether EmulationStation answered."""
+        kid_mode = self.settings().get("UIMode") == "Kid"
+        try:
+            systems = self.es.systems()
+        except EsError as err:
+            log.warning("catalog: %s, trying again in %ds", err, CATALOG_RETRY)
+            if only is None:
+                self.at("catalog", CATALOG_RETRY, self.scheduled_catalog)
+            return False
+        names = [s["name"] for s in catalog_systems(systems)]
+        games = {}
+        for name in names:
+            if only in (None, name):
+                try:
+                    games[name] = self.es.games(name)
+                except EsError as err:
+                    log.warning("catalog of %s: %s", name, err)
+        fresh = build_catalog(systems, games, kid_mode)
+        catalog = {}
+        for name in names:  # a system that was not read keeps what it had
+            found = fresh.get(name) if name in games else self.catalog.get(name)
+            if found:
+                catalog[name] = found
+        self.catalog = catalog
+        self.roms = {gid: rom for s in catalog.values() for gid, rom in s.roms.items()}
+        log.info("catalog: %d games in %d systems", len(self.roms), len(catalog))
+        self.publish_catalog()
+        if only is None:
+            self.at("catalog", CATALOG_EVERY, self.scheduled_catalog)
+        return True
+
+    def scheduled_catalog(self):
+        if self.game:  # leave EmulationStation alone during a game
+            self.at("catalog", CATALOG_EVERY, self.scheduled_catalog)
+        else:
+            self.refresh_catalog()
 
     # --- events -----------------------------------------------------------
 
@@ -420,6 +508,9 @@ class Daemon:
     def end(self):
         g, self.game = self.game, None
         ended = self.now()
+        # EmulationStation saves the play count once the launcher returns.
+        self.at("catalog_game", CATALOG_AFTER_GAME,
+                lambda: self.refresh_catalog(only=g["system"]))
         log.info("ended %s after %ds", g["name"], ended - g["started"])
         # Before "idle": Home Assistant counts the session from this, and
         # stops counting the running one when it sees the same started_at.
@@ -473,6 +564,14 @@ class Daemon:
         elif leaf == "lock":
             self.locked = payload.upper() == "ON"
             log.info("lock %s", "on" if self.locked else "off")
+        elif leaf == "catalog/index":
+            if self.index_sent is None:  # left by an earlier run: start from it
+                try:
+                    self.published = {e["name"]: e["hash"] for e in json.loads(payload)}
+                except (ValueError, TypeError, KeyError) as err:
+                    log.warning("retained catalog index: %s", err)
+                else:
+                    self.index_sent = payload
         elif leaf == "availability" and payload != "online" and not self.stopping:
             # Our will fired (connection dropped) or a stale "offline" was
             # retained: we are alive, say so again.
@@ -492,7 +591,8 @@ class Daemon:
             ["mosquitto_sub", "-v", "-q", "1",
              "--will-topic", avail, "--will-payload", "offline",
              "--will-qos", "1", "--will-retain",
-             "-t", f"{self.base}/cmd", "-t", f"{self.base}/lock", "-t", avail],
+             "-t", f"{self.base}/cmd", "-t", f"{self.base}/lock", "-t", avail,
+             "-t", f"{self.base}/catalog/index"],
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=self.env)
 
     def serve(self, fifo=FIFO):
@@ -506,6 +606,7 @@ class Daemon:
         bufs = {fifo_fd: b""}
         sub, sub_at = None, 0.0
         self.publish_all()
+        self.at("catalog", 0, self.scheduled_catalog)
         try:
             while True:
                 if sub is None and self.now() >= sub_at:
@@ -513,7 +614,7 @@ class Daemon:
                     fd = sub.stdout.fileno()
                     sel.register(fd, selectors.EVENT_READ, self.on_mqtt)
                     bufs[fd] = b""
-                for key, _ in sel.select(CHECK_EVERY):
+                for key, _ in sel.select(self.timeout()):
                     data = os.read(key.fd, 65536)
                     if not data:  # only mosquitto_sub can hit EOF
                         sel.unregister(key.fd)
@@ -524,6 +625,7 @@ class Daemon:
                     *lines, bufs[key.fd] = (bufs[key.fd] + data).split(b"\n")
                     for line in lines:
                         key.data(line.decode(errors="replace"))
+                self.run_timers()
                 self.tick()
         finally:
             self.stopping = True
@@ -542,10 +644,11 @@ def main():
     device = conf.get("device") or socket.gethostname().lower()
     base = f"{conf.get('topic_prefix', 'batocera')}/{device}"
     env = dict(os.environ, XDG_CONFIG_HOME=str(HOME))
+    es = EsApi(os.environ.get("HA_BATOCERA_ES_URL", ES_URL))  # tests use another
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    log.info("starting, topics under %s/", base)
+    log.info("starting %s, topics under %s/", VERSION, base)
     try:
-        Daemon(base, env).serve()
+        Daemon(base, env, es=es).serve()
     except Exception:
         log.exception("crashed")
         raise

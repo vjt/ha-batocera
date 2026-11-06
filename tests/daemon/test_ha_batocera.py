@@ -3,6 +3,7 @@
     python3 -m unittest discover -s tests/daemon -v
 """
 
+import gzip
 import json
 import os
 import re
@@ -117,7 +118,8 @@ class Recorder:
         for cmd, data in self.calls:
             if cmd[0] == "mosquitto_pub":
                 topic = cmd[cmd.index("-t") + 1]
-                out.append((topic, data.decode() if data and "/cover" not in topic else data))
+                binary = "/cover" in topic or "/catalog/system/" in topic
+                out.append((topic, data.decode() if data and not binary else data))
         return out
 
 
@@ -336,6 +338,126 @@ class EsApiTest(unittest.TestCase):
             self.es.running()
 
 
+class CatalogDaemonTest(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeEs()
+        self.addCleanup(self.fake.close)
+        self.fake.games = json.loads(json.dumps(SYNTHETIC["games"]))
+        self.run = Recorder()
+        self.clock = Clock()
+        self.settings = {}
+        self.d = hb.Daemon("batocera/test", {}, run=self.run, now=self.clock,
+                           es=hb.EsApi(self.fake.url), settings=lambda: self.settings)
+
+    def published(self):
+        out = self.run.published()
+        self.run.calls.clear()
+        return out
+
+    def refresh(self, **kwargs):
+        with self.assertLogs(hb.log, "INFO"):
+            return self.d.refresh_catalog(**kwargs)
+
+    def test_systems_then_index(self):
+        self.assertTrue(self.refresh())
+        published = self.published()
+        self.assertEqual([t for t, _ in published], [
+            "batocera/test/catalog/system/megadrive", "batocera/test/catalog/system/snes",
+            "batocera/test/catalog/index"])
+        rows = json.loads(gzip.decompress(published[1][1]))
+        self.assertEqual(rows[0][1], "Super Mario World")
+        index = json.loads(published[2][1])
+        self.assertEqual([(e["name"], e["count"]) for e in index], [("megadrive", 4), ("snes", 1)])
+        self.assertEqual(self.d.roms[rows[0][0]].path, "/userdata/roms/snes/Mario World.sfc")
+        # Nothing changed, nothing published.
+        self.refresh()
+        self.assertEqual(self.published(), [])
+
+    def test_only_what_changed(self):
+        self.refresh()
+        self.published()
+        self.fake.games["snes"][0]["playcount"] = "1"
+        self.refresh()
+        self.assertEqual([t for t, _ in self.published()], [
+            "batocera/test/catalog/system/snes", "batocera/test/catalog/index"])
+
+    def test_gone_systems_are_cleared_after_the_index(self):
+        self.refresh()
+        self.published()
+        self.fake.systems = [s for s in SYNTHETIC["systems"] if s["name"] != "snes"]
+        self.refresh()
+        self.assertEqual(self.published(), [
+            ("batocera/test/catalog/index", json.dumps(
+                [self.d.catalog["megadrive"].entry], separators=(",", ":"))),
+            ("batocera/test/catalog/system/snes", None),
+        ])
+        self.assertNotIn(hb.game_id("/userdata/roms/snes/Mario World.sfc"), self.d.roms)
+
+    def test_starts_from_the_retained_index(self):
+        catalog = hb.build_catalog(SYNTHETIC["systems"], SYNTHETIC["games"])
+        index = [catalog["megadrive"].entry, dict(catalog["snes"].entry, hash="0" * 12),
+                 {"name": "gone", "hash": "1" * 12}]
+        self.d.on_mqtt("batocera/test/catalog/index " + json.dumps(index))
+        self.refresh()
+        self.assertEqual([(t, p is None) for t, p in self.published()], [
+            ("batocera/test/catalog/system/snes", False),
+            ("batocera/test/catalog/index", False),
+            ("batocera/test/catalog/system/gone", True),
+        ])
+        # Our own index, seen again, changes nothing.
+        self.d.on_mqtt("batocera/test/catalog/index " + json.dumps(index))
+        self.refresh()
+        self.assertEqual(self.published(), [])
+
+    def test_kid_mode(self):
+        self.settings = {"UIMode": "Kid"}
+        self.refresh()
+        self.assertEqual(list(self.d.catalog), ["megadrive"])
+
+    def test_es_down_retries(self):
+        self.fake.close()
+        with self.assertLogs(hb.log, "WARNING"):
+            self.assertFalse(self.d.refresh_catalog())
+        self.assertEqual(self.published(), [])
+        self.assertEqual(self.d.timers["catalog"][0], self.clock.t + hb.CATALOG_RETRY)
+
+    def test_a_system_that_fails_keeps_what_it_had(self):
+        self.refresh()
+        self.published()
+        del self.fake.games["snes"]  # 404
+        with self.assertLogs(hb.log, "WARNING"):
+            self.d.refresh_catalog()
+        self.assertEqual(list(self.d.catalog), ["megadrive", "snes"])
+        self.assertEqual(self.published(), [])
+
+    def test_schedule(self):
+        self.d.at("catalog", 0, self.d.scheduled_catalog)
+        self.assertEqual(self.d.timeout(), 0)
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.run_timers()
+        self.assertEqual(self.d.timers["catalog"][0], self.clock.t + hb.CATALOG_EVERY)
+        self.assertEqual(self.d.timeout(), hb.CHECK_EVERY)
+        self.clock.t += hb.CATALOG_EVERY
+        self.d.game = {"system": "snes"}  # during a game: later
+        self.fake.requests.clear()
+        self.d.run_timers()
+        self.assertEqual(self.fake.requests, [])
+        self.assertEqual(self.d.timers["catalog"][0], self.clock.t + hb.CATALOG_EVERY)
+
+    def test_after_a_game_its_system_is_read_again(self):
+        self.refresh()
+        self.d.game = {"name": "Super Mario World", "system": "snes", "emulator": "libretro",
+                       "started": self.clock.t - 60, "id": "x"}
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.end()
+        self.clock.t += hb.CATALOG_AFTER_GAME
+        self.fake.requests.clear()
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.run_timers()
+        self.assertEqual(self.fake.requests, [("GET", "/systems"), ("GET", "/systems/snes/games")])
+        self.assertEqual(list(self.d.catalog), ["megadrive", "snes"])
+
+
 class DaemonTest(TempDirTest):
     def setUp(self):
         super().setUp()
@@ -513,9 +635,12 @@ class EndToEndTest(TempDirTest):
         (self.tmp / "ha-batocera.conf").write_text("device=e2e\n")
         self.log = self.tmp / "pub.log"
         self.fifo = self.tmp / "events.fifo"
+        self.es = FakeEs()
+        self.addCleanup(self.es.close)
         self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
                         HA_BATOCERA_HOME=str(self.tmp), HA_BATOCERA_FIFO=str(self.fifo),
-                        HA_BATOCERA_LOG=str(self.tmp / "daemon.log"), FAKE_LOG=str(self.log))
+                        HA_BATOCERA_LOG=str(self.tmp / "daemon.log"), FAKE_LOG=str(self.log),
+                        HA_BATOCERA_ES_URL=self.es.url)
 
     def published(self):
         if not self.log.exists():
@@ -555,6 +680,8 @@ class EndToEndTest(TempDirTest):
         sub_args = (self.tmp / "pub.log.sub").read_text().split()
         self.assertIn("--will-retain", sub_args)
         self.assertIn("batocera/e2e/cmd", sub_args)
+        self.assertIn("batocera/e2e/catalog/index", sub_args)
+        self.wait_for(lambda p: any(t == "batocera/e2e/catalog/index" for t, _, _ in p))
 
         self.hook("gameStart", "snes", "libretro", "snes9x", "/userdata/roms/snes/Mario World.sfc")
         self.wait_for(lambda p: ("batocera/e2e/state", "playing", str(self.tmp)) in p)
