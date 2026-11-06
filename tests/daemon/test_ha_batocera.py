@@ -3,6 +3,7 @@
     python3 -m unittest discover -s tests/daemon -v
 """
 
+import base64
 import gzip
 import json
 import os
@@ -121,6 +122,25 @@ class Recorder:
                 binary = "/cover" in topic or "/catalog/system/" in topic
                 out.append((topic, data.decode() if data and not binary else data))
         return out
+
+
+class FfmpegRecorder(Recorder):
+    """Records like Recorder, but ffmpeg (nice or not) writes a fake JPEG."""
+
+    def __call__(self, cmd, input=None, **kwargs):
+        out = super().__call__(cmd, input, **kwargs)
+        if "ffmpeg" in cmd[:4]:
+            return subprocess.CompletedProcess(cmd, 0, b"\xff\xd8fake", b"")
+        return out
+
+
+class RealFfmpeg(Recorder):
+    """Runs ffmpeg for real, records everything else."""
+
+    def __call__(self, cmd, input=None, **kwargs):
+        if "ffmpeg" in cmd[:4]:
+            return subprocess.run(cmd, input=input, **kwargs)
+        return super().__call__(cmd, input, **kwargs)
 
 
 class Clock:
@@ -456,6 +476,99 @@ class CatalogDaemonTest(unittest.TestCase):
             self.d.run_timers()
         self.assertEqual(self.fake.requests, [("GET", "/systems"), ("GET", "/systems/snes/games")])
         self.assertEqual(list(self.d.catalog), ["megadrive", "snes"])
+
+
+class RequestTest(unittest.TestCase):
+    SONIC = hb.game_id("/userdata/roms/megadrive/Sonic.zip")
+    BARE = hb.game_id("/userdata/roms/megadrive/Bare.zip")
+
+    def setUp(self):
+        self.fake = FakeEs()
+        self.addCleanup(self.fake.close)
+        self.run = FfmpegRecorder()
+        self.clock = Clock()
+        self.d = hb.Daemon("batocera/test", {}, run=self.run, now=self.clock,
+                           es=hb.EsApi(self.fake.url), settings=dict)
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.refresh_catalog()
+        self.run.calls.clear()
+        self.fake.media["/systems/megadrive/games/a0/media/thumbnail"] = b"PNG"
+
+    def request(self, **req):
+        req.setdefault("id", "0123abcd")
+        self.d.on_mqtt("batocera/test/req " + json.dumps(req))
+        answers = [(t, json.loads(p)) for t, p in self.run.published() if "/resp/" in t]
+        self.calls = list(self.run.calls)
+        self.run.calls.clear()
+        return answers
+
+    def answer(self, **req):
+        [(topic, answer)] = self.request(**req)
+        self.assertEqual(topic, "batocera/test/resp/" + req.get("id", "0123abcd"))
+        return answer
+
+    def test_dropped(self):
+        with self.assertLogs(hb.log, "WARNING"):
+            for line in ('{"op": "refresh", "id": "0123ABCD"}', '{"op": "refresh", "id": "0123"}',
+                         '{"op": "refresh"}', "not json", "[1, 2]",
+                         json.dumps({"op": "cover", "id": "0123abcd", "pad": "x" * 4096})):
+                self.d.on_mqtt("batocera/test/req " + line)
+        self.assertEqual(self.run.calls, [])
+
+    def test_unknown_op(self):
+        with self.assertLogs(hb.log, "WARNING"):
+            self.assertEqual(self.answer(op="reboot"),
+                             {"id": "0123abcd", "ok": False, "error": "bad_request"})
+
+    def test_answers_are_not_retained(self):
+        self.request(op="cover", game="nope")
+        [(cmd, _)] = self.calls
+        self.assertEqual(cmd, ["mosquitto_pub", "-q", "1", "-t", "batocera/test/resp/0123abcd", "-s"])
+
+    def test_cover(self):
+        answer = self.answer(op="cover", system="megadrive", game=self.SONIC)
+        self.assertEqual(base64.b64decode(answer.pop("jpeg")), b"\xff\xd8fake")
+        self.assertEqual(answer, {"id": "0123abcd", "ok": True})
+        ffmpeg = next(c for c, _ in self.calls if "ffmpeg" in c)
+        self.assertEqual(ffmpeg[:4], ["nice", "-n", "19", "ffmpeg"])
+        self.assertIn("scale='min(256,iw)':'min(256,ih)':force_original_aspect_ratio=decrease", ffmpeg)
+
+    def test_cover_errors(self):
+        self.assertEqual(self.answer(op="cover", game="0" * 12)["error"], "unknown_game")
+        self.assertEqual(self.answer(op="cover", system="snes", game=self.SONIC)["error"],
+                         "unknown_game")
+        self.assertEqual(self.answer(op="cover", game=self.BARE)["error"], "no_cover")
+        sor = hb.game_id("/userdata/roms/megadrive/Streets of Rage.zip")
+        self.assertEqual(self.answer(op="cover", game=sor)["error"], "no_cover")  # 404
+        self.run = Recorder()  # ffmpeg writes nothing
+        self.d.run = self.run
+        with self.assertLogs(hb.log, "WARNING"):
+            self.assertEqual(self.answer(op="cover", game=self.SONIC)["error"], "failed")
+        self.fake.close()
+        with self.assertLogs(hb.log, "WARNING"):
+            self.assertEqual(self.answer(op="cover", game=self.SONIC)["error"], "es_unreachable")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
+    def test_cover_for_real(self):
+        png = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+                              "testsrc=size=1200x900", "-frames:v", "1", "-f", "image2pipe",
+                              "-c:v", "png", "-"], capture_output=True, check=True).stdout
+        self.fake.media["/systems/megadrive/games/a0/media/thumbnail"] = png
+        self.d.run = self.run = RealFfmpeg()
+        jpeg = base64.b64decode(self.answer(op="cover", game=self.SONIC)["jpeg"])
+        size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                               "-of", "csv=p=0", "-"], input=jpeg, capture_output=True, check=True)
+        self.assertEqual(size.stdout.decode().strip(), "256,192")
+
+    def test_refresh(self):
+        self.fake.games = dict(SYNTHETIC["games"], snes=[])
+        with self.assertLogs(hb.log, "INFO"):
+            answers = self.request(op="refresh")
+        self.assertEqual(answers, [("batocera/test/resp/0123abcd", {"id": "0123abcd", "ok": True})])
+        self.assertEqual(list(self.d.catalog), ["megadrive"])
+        self.fake.close()
+        with self.assertLogs(hb.log, "INFO"):
+            self.assertEqual(self.answer(op="refresh")["error"], "es_unreachable")
 
 
 class DaemonTest(TempDirTest):

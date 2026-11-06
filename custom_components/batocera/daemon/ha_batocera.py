@@ -10,6 +10,7 @@ Game events come from the launch hook, one tab-separated line per event on a
 FIFO: event, launcher pid, system, emulator, core, rom path.
 """
 
+import base64
 import gzip
 import hashlib
 import json
@@ -21,6 +22,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -40,6 +42,9 @@ STOP_GRACE = 5          # seconds the launcher gets to exit after --emukill
 SUB_RETRY = 30          # seconds before restarting a dead mosquitto_sub
 COVER_SIZE = 512        # cover bounding box, pixels
 COVER_MAX = 500 * 1024  # never publish a bigger cover
+THUMB_SIZE = 256        # catalog covers, pixels
+REQ_MAX = 4096          # bigger requests are dropped
+REQ_ID = re.compile(r"^[0-9a-f]{8,32}$")
 # EmulationStation's web API, by address: "localhost" may resolve to ::1,
 # which it refuses. Only ever used on the box itself.
 ES_URL = "http://127.0.0.1:1234"
@@ -113,14 +118,17 @@ def game_info(rom, roms=ROMS):
     return Path(rom).stem, None
 
 
-def make_cover(image, run=subprocess.run):
-    """Downscale a cover to a JPEG of at most COVER_SIZE px a side, or None."""
-    scale = (f"scale='min({COVER_SIZE},iw)':'min({COVER_SIZE},ih)'"
+def make_cover(image, run=subprocess.run, size=COVER_SIZE, nice=False):
+    """Downscale a cover to a JPEG of at most size px a side, or None.
+
+    nice: at the lowest priority, not to slow down a game being played.
+    """
+    scale = (f"scale='min({size},iw)':'min({size},ih)'"
              ":force_original_aspect_ratio=decrease")
+    cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", image,
+           "-vf", scale, "-frames:v", "1", "-q:v", "5", "-f", "mjpeg", "-"]
     try:
-        out = run(["ffmpeg", "-nostdin", "-loglevel", "error", "-i", image,
-                   "-vf", scale, "-frames:v", "1", "-q:v", "5", "-f", "mjpeg", "-"],
-                  capture_output=True, timeout=30)
+        out = run(["nice", "-n", "19", *cmd] if nice else cmd, capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as err:
         log.warning("cover %s: %s", image, err)
         return None
@@ -424,6 +432,70 @@ class Daemon:
         self.pub("version", VERSION)
         self.publish_game()
 
+    # --- requests -----------------------------------------------------------
+
+    def on_request(self, payload):
+        """One request from Home Assistant on <base>/req."""
+        if len(payload.encode()) > REQ_MAX:
+            log.warning("request of %d bytes dropped", len(payload.encode()))
+            return
+        try:
+            req = json.loads(payload)
+        except ValueError:
+            req = None
+        rid = req.get("id") if isinstance(req, dict) else None
+        if not isinstance(rid, str) or not REQ_ID.match(rid):
+            log.warning("request without a valid id dropped: %.80r", payload)
+            return
+        handler = {
+            "cover": self.req_cover,
+            "refresh": self.req_refresh,
+        }.get(req.get("op"))
+        if handler is None:
+            log.warning("unknown request %.80r", payload)
+            self.respond(rid, "bad_request")
+        else:
+            handler(rid, req)
+
+    def respond(self, rid, error=None, **fields):
+        answer = {"id": rid, "ok": error is None, **fields}
+        if error:
+            answer["error"] = error
+        self.pub(f"resp/{rid}", json.dumps(answer), retain=False)
+
+    def find_rom(self, req):
+        """The catalog's game a request names, or None. Only ids are taken:
+        never a path from the broker."""
+        rom = self.roms.get(req.get("game")) if isinstance(req.get("game"), str) else None
+        if rom and req.get("system") not in (None, rom.system):
+            return None
+        return rom
+
+    def req_cover(self, rid, req):
+        rom = self.find_rom(req)
+        if rom is None:
+            return self.respond(rid, "unknown_game")
+        if rom.media is None:
+            return self.respond(rid, "no_cover")
+        try:
+            image = self.es.media(rom.system, rom.es_id, rom.media)
+        except EsError as err:
+            log.warning("cover of %s: %s", rom.path, err)
+            return self.respond(rid, "es_unreachable")
+        if not image:
+            return self.respond(rid, "no_cover")
+        with tempfile.NamedTemporaryFile(prefix="ha-batocera-") as src:
+            src.write(image)
+            src.flush()
+            jpeg = make_cover(src.name, self.run, size=THUMB_SIZE, nice=True)
+        if jpeg is None:
+            return self.respond(rid, "failed")
+        self.respond(rid, jpeg=base64.b64encode(jpeg).decode())
+
+    def req_refresh(self, rid, req):
+        log.info("catalog refresh requested")
+        self.respond(rid, None if self.refresh_catalog() else "es_unreachable")
+
     # --- the catalog --------------------------------------------------------
 
     def refresh_catalog(self, only=None):
@@ -564,6 +636,8 @@ class Daemon:
         elif leaf == "lock":
             self.locked = payload.upper() == "ON"
             log.info("lock %s", "on" if self.locked else "off")
+        elif leaf == "req":
+            self.on_request(payload)
         elif leaf == "catalog/index":
             if self.index_sent is None:  # left by an earlier run: start from it
                 try:
@@ -592,6 +666,7 @@ class Daemon:
              "--will-topic", avail, "--will-payload", "offline",
              "--will-qos", "1", "--will-retain",
              "-t", f"{self.base}/cmd", "-t", f"{self.base}/lock", "-t", avail,
+             "-t", f"{self.base}/req",
              "-t", f"{self.base}/catalog/index"],
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=self.env)
 
