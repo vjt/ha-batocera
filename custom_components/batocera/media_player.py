@@ -59,4 +59,5 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
         return None, None
 
     async def async_media_stop(self) -> None:
+        await self.box.async_check_control(self._context)
         await self.box.async_stop()

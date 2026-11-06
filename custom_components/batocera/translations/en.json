@@ -73,5 +73,16 @@
       "title": "{name}: cannot update ha-batocera",
       "description": "Home Assistant could not check or update the ha-batocera daemon on {name} ({host}): {error}\n\nIt tries again the next time the box comes online, or when the integration is reloaded. If the box no longer accepts Home Assistant's SSH key, reconfigure the Batocera integration for this box with the root password."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Who may play",
+        "description": "Everyone who can open Home Assistant sees what is playing and browses the games. Launching, pausing and stopping games is for admins, and for the users picked here. Automations may always do it.",
+        "data": {
+          "control_users": "Users who may launch, pause and stop games"
+        }
+      }
+    }
   }
 }

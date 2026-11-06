@@ -22,4 +22,5 @@ class StopButton(LiveEntity, ButtonEntity):
     _attr_icon = "mdi:stop"
 
     async def async_press(self) -> None:
+        await self.box.async_check_control(self._context)
         await self.box.async_stop()

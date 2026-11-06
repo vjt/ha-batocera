@@ -6,14 +6,27 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD
+from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 from homeassistant.util import slugify
 
 from . import installer
-from .const import CONF_TOPIC, DEFAULT_HOST, DEFAULT_TOPIC, DOMAIN
+from .const import CONF_CONTROL_USERS, CONF_TOPIC, DEFAULT_HOST, DEFAULT_TOPIC, DOMAIN
 
 PASSWORD = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 SECRETS = (CONF_PASSWORD, "mqtt_password")
@@ -36,6 +49,11 @@ INSTALL_SCHEMA = vol.Schema(
 
 class BatoceraConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return BatoceraOptionsFlow()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         return self.async_show_menu(step_id="user", menu_options=["install", "manual"])
@@ -114,3 +132,32 @@ class BatoceraConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(step_id="reconfigure", data_schema=schema, errors=errors)
+
+
+class BatoceraOptionsFlow(OptionsFlow):
+    """Who may launch, pause and stop games, besides admins."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+        users = [
+            u
+            for u in await self.hass.auth.async_get_users()
+            if not u.system_generated and u.is_active and not u.is_admin
+        ]
+        ids = {u.id for u in users}
+        current = [i for i in self.config_entry.options.get(CONF_CONTROL_USERS, []) if i in ids]
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_CONTROL_USERS, default=current): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=u.id, label=u.name or u.id)
+                            for u in sorted(users, key=lambda u: (u.name or "").casefold())
+                        ],
+                        multiple=True,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

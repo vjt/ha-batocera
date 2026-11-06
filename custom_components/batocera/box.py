@@ -14,15 +14,18 @@ import secrets
 from typing import Any, NamedTuple
 import zlib
 
+from homeassistant.auth.models import User
+from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.components import mqtt
 from homeassistant.components.mqtt import ReceiveMessage
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Context, HomeAssistant, callback
+from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_TOPIC, DOMAIN, EVENT_WARNING
+from .const import CONF_CONTROL_USERS, CONF_TOPIC, DOMAIN, EVENT_WARNING
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,6 +97,7 @@ class Box:
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
+        self.entry = entry
         self.entry_id = entry.entry_id
         self.name = entry.title
         self.prefix: str = entry.data[CONF_TOPIC]
@@ -167,6 +171,24 @@ class Box:
         entry.async_on_unload(
             async_track_time_interval(self.hass, self._tick, timedelta(minutes=1))
         )
+
+    # --- who may control the box -----------------------------------------
+
+    def may_control(self, user: User | None) -> bool:
+        """Admins, and the users picked in the integration's options."""
+        if user is None or not user.is_active:
+            return False
+        return user.is_admin or user.id in self.entry.options.get(CONF_CONTROL_USERS, [])
+
+    async def async_check_control(self, context: Context | None) -> None:
+        """Raise Unauthorized unless the caller may launch, pause or stop a
+        game. Calls without a user, from automations and scripts that no user
+        started, are allowed: whoever wrote them was allowed to."""
+        if context is None or context.user_id is None:
+            return
+        user = await self.hass.auth.async_get_user(context.user_id)
+        if not self.may_control(user):
+            raise Unauthorized(context=context, permission=POLICY_CONTROL)
 
     # --- listeners ------------------------------------------------------
 
