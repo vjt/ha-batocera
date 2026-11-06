@@ -67,6 +67,9 @@ class TempDirTest(unittest.TestCase):
 
 
 class VersionTest(unittest.TestCase):
+    def test_daemon_knows_its_version(self):
+        self.assertEqual(hb.VERSION, (DAEMON / "VERSION").read_text().strip())
+
     def test_matches_the_integration(self):
         # Home Assistant reinstalls the daemon when the box has another one.
         manifest = json.loads((DAEMON.parent / "manifest.json").read_text())
@@ -77,6 +80,15 @@ class VersionTest(unittest.TestCase):
         repo = DAEMON.parents[2]
         self.assertIn(f"\nTAG={tag}\n", (repo / "get.sh").read_text())
         self.assertIn(f"/ha-batocera/{tag}/get.sh", (repo / "README.md").read_text())
+
+
+class GameIdTest(unittest.TestCase):
+    def test_md5_of_the_path(self):
+        # The same id names the game in the catalog and while it runs.
+        self.assertEqual(hb.game_id("/userdata/roms/snes/Mario World.sfc"),
+                         "636f37e368fb")
+        self.assertEqual(hb.game_id("/userdata/roms/snes/./Mario World.sfc"),
+                         hb.game_id("/userdata/roms/snes/Mario World.sfc"))
 
 
 class ConfTest(TempDirTest):
@@ -175,6 +187,7 @@ class DaemonTest(TempDirTest):
             self.d.on_line(self.start_line())
             self.assertEqual(self.run.published(), [
                 ("batocera/test/game", "Bare"),
+                ("batocera/test/game_id", hb.game_id(self.rom)),
                 ("batocera/test/system", "megadrive"),
                 ("batocera/test/emulator", "libretro/genesisplusgx"),
                 ("batocera/test/started_at", "2023-11-14T22:13:20+00:00"),
@@ -188,8 +201,9 @@ class DaemonTest(TempDirTest):
         self.assertEqual(published[0][0], "batocera/test/last_session")
         self.assertEqual(published[1], ("batocera/test/state", "idle"))
         self.assertEqual([t for t, p in published[2:] if p is None],
-                         ["batocera/test/game", "batocera/test/system", "batocera/test/emulator",
-                          "batocera/test/started_at", "batocera/test/cover"])
+                         ["batocera/test/game", "batocera/test/game_id", "batocera/test/system",
+                          "batocera/test/emulator", "batocera/test/started_at",
+                          "batocera/test/cover"])
         self.assertEqual(json.loads(published[0][1]), {
             "game": "Bare", "system": "megadrive", "emulator": "libretro/genesisplusgx",
             "started_at": "2023-11-14T22:13:20+00:00", "ended_at": "2023-11-14T22:15:25+00:00",
@@ -280,8 +294,10 @@ class DaemonTest(TempDirTest):
     def test_availability_self_heal(self):
         with self.assertLogs(hb.log, "INFO"):
             self.d.on_mqtt("batocera/test/availability offline")
-        topics = [t for t, _ in self.run.published()]
+        published = self.run.published()
+        topics = [t for t, _ in published]
         self.assertEqual(topics[0], "batocera/test/availability")
+        self.assertIn(("batocera/test/version", hb.VERSION), published)
         self.assertIn("batocera/test/state", topics)
         self.run.calls.clear()
         self.d.on_mqtt("batocera/test/availability online")

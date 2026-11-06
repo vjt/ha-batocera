@@ -10,6 +10,7 @@ Game events come from the launch hook, one tab-separated line per event on a
 FIFO: event, launcher pid, system, emulator, core, rom path.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -36,6 +37,16 @@ COVER_MAX = 500 * 1024  # never publish a bigger cover
 log = logging.getLogger("ha-batocera")
 
 
+def read_version():
+    try:
+        return Path(__file__).with_name("VERSION").read_text().strip()
+    except OSError:
+        return ""
+
+
+VERSION = read_version()
+
+
 def read_conf(path):
     """Parse key=value lines, ignoring blanks and # comments."""
     conf = {}
@@ -49,6 +60,16 @@ def read_conf(path):
             key, value = line.split("=", 1)
             conf[key.strip()] = value.strip()
     return conf
+
+
+def game_id(path):
+    """A game's id: the first 12 hex digits of the MD5 of its ROM path.
+
+    The catalog names games by it, and game_id tells which one is running,
+    so both must hash the path the same way.
+    """
+    path = os.path.normpath(path)
+    return hashlib.md5(path.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
 def iso(ts):
@@ -158,6 +179,7 @@ class Daemon:
         g = self.game or {}
         fields = [
             ("game", g.get("name", "")),
+            ("game_id", g.get("id", "")),
             ("system", g.get("system", "")),
             ("emulator", g.get("emulator", "")),
             ("started_at", iso(g["started"]) if g else ""),
@@ -170,6 +192,7 @@ class Daemon:
 
     def publish_all(self):
         self.pub("availability", "online")
+        self.pub("version", VERSION)
         self.publish_game()
 
     # --- events -----------------------------------------------------------
@@ -199,6 +222,7 @@ class Daemon:
             "pid": pid,
             "starttime": starttime(pid),
             "name": name,
+            "id": game_id(rom),
             "system": system,
             "emulator": emulator if core in ("", emulator) else f"{emulator}/{core}",
             "started": self.now(),
