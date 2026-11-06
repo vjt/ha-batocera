@@ -15,8 +15,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "batocera"))
+DAEMON = Path(__file__).resolve().parents[2] / "custom_components/batocera/daemon"
+sys.path.insert(0, str(DAEMON))
 
 import ha_batocera as hb  # noqa: E402
 
@@ -328,7 +328,7 @@ class EndToEndTest(TempDirTest):
         self.fail(f"timed out; published: {self.published()}")
 
     def hook(self, *args):
-        return subprocess.run([str(REPO / "batocera/hook"), *args], env=self.env, timeout=5)
+        return subprocess.run([str(DAEMON / "hook"), *args], env=self.env, timeout=5)
 
     def test_hook_without_daemon_returns_at_once(self):
         t = time.time()
@@ -338,7 +338,7 @@ class EndToEndTest(TempDirTest):
         self.assertLess(time.time() - t, 3)
 
     def test_daemon_lifecycle(self):
-        daemon = subprocess.Popen([sys.executable, str(REPO / "batocera/ha_batocera.py")],
+        daemon = subprocess.Popen([sys.executable, str(DAEMON / "ha_batocera.py")],
                                   env=self.env)
         self.addCleanup(daemon.kill)
         # Startup, then the stale retained "offline" makes it republish.

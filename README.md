@@ -15,8 +15,10 @@ Two parts live in this repository:
 
 | Part | Where it runs | What it is |
 |------|---------------|------------|
-| `batocera/` | the Batocera box | a small daemon (Python 3, standard library only), a launch hook and a service script |
 | `custom_components/batocera/` | Home Assistant | a custom integration, installable with HACS |
+| `custom_components/batocera/daemon/` | the Batocera box | a small daemon (Python 3, standard library only), a launch hook and a service script |
+
+The daemon lives inside the integration so that HACS ships it too.
 
 Nothing else is needed: the daemon talks to the broker through the
 `mosquitto_pub` and `mosquitto_sub` clients Batocera already ships, and the
@@ -55,11 +57,11 @@ EmulationStation's web API (port 1234).
 You need a Batocera release that has `batocera-services` (user services in
 `/userdata/system/services`), and an MQTT broker reachable from the box.
 
-Copy the `batocera/` folder to the box and run the installer there as root,
+Copy the `custom_components/batocera/daemon/` folder to the box and run the installer there as root,
 for example:
 
 ```sh
-scp -r batocera root@batocera.local:/tmp/ha-batocera
+scp -r custom_components/batocera/daemon root@batocera.local:/tmp/ha-batocera
 ssh root@batocera.local /tmp/ha-batocera/install.sh
 ```
 
