@@ -284,15 +284,84 @@ All under `batocera/<device>/` (the prefix is set by `topic_prefix` and
 | `started_at` | yes | box | ISO 8601 UTC timestamp of the game start, empty when idle |
 | `cover` | yes | box | raw JPEG bytes (at most 512 px a side, 500 KB), empty when there is none |
 | `last_session` | yes | box | JSON: `game`, `system`, `emulator`, `started_at`, `ended_at`, `seconds` |
+| `version` | yes | box | the daemon's version |
+| `game_id` | yes | box | the running game's id in the catalog, empty when idle |
+| `pausable` | yes | box | `ON` / `OFF`: whether the running emulator has a pause hotkey; empty when idle or not known |
+| `paused` | yes | box | `ON` / `OFF`, as far as the daemon knows; empty when idle |
+| `public_web_access` | yes | box | `ON` / `OFF`: whether EmulationStation's web API is open to the network |
+| `catalog/index` | yes | box | JSON: the systems in the catalog, see below |
+| `catalog/system/<name>` | yes | box | gzip-compressed JSON: the games of one system, see below |
 | `cmd` | no | Home Assistant | `stop` |
 | `lock` | yes | Home Assistant | `ON` / `OFF` |
+| `req` | no | Home Assistant | JSON: a request, see below |
+| `resp/<id>` | no | box | JSON: the answer to request `<id>` |
 
 An empty retained message clears the topic. When a game ends, `last_session`
 is published before `state` turns `idle`.
 
 If your broker uses ACLs, the box needs to publish to `batocera/<device>/#`
-and to subscribe to its `cmd`, `lock` and `availability` topics; Home
-Assistant needs to read `batocera/<device>/#` and to publish `cmd` and `lock`.
+and to subscribe to its `cmd`, `lock`, `req`, `availability` and
+`catalog/index` topics; Home Assistant needs to read `batocera/<device>/#` and
+to publish `cmd`, `lock` and `req`.
+
+### The catalog
+
+The daemon reads the games from EmulationStation's web API, on the box's
+loopback address only, and publishes them. Only game systems are listed (no
+collections), only the visible ones, and no hidden games; when
+EmulationStation is in Kid mode, only the games marked as kid games.
+
+`catalog/index` lists the systems that have games:
+
+```json
+[{"name": "megadrive", "fullname": "Sega Mega Drive", "manufacturer": "Sega",
+  "year": 1988, "count": 2, "hash": "3f2a9c0e1b7d"}]
+```
+
+`hash` changes when the system's games do: a system is published again only
+then. `catalog/system/<name>` holds, gzip-compressed, one row per game:
+
+```json
+[["9b1c4e0d2a37", "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000"],
+ ["0d5e7a9b3c21", "Streets of Rage", 1991, "Beat'em up", "1-2", 0, 0, ""]]
+```
+
+That is: id, name, year (or `null`), genre, players, flags, play count, last
+played (EmulationStation's local time, or empty). Flags: 1 = favourite, 2 =
+has a cover. The id is the first 12 hex digits of the MD5 of the ROM's path:
+`game_id` uses the same, so the running game can be found in the catalog.
+
+The catalog is published when the daemon starts (and again until
+EmulationStation answers), after each game (that system only), every 30
+minutes while no game runs, and on request. Systems that disappear are
+cleared.
+
+### Requests
+
+Home Assistant sends requests on `req`, as JSON with an `id` of 8 to 32
+lower-case hex digits and an `op`; the box answers on `resp/<id>`. Requests
+bigger than 4 KB, or without a valid id, are dropped.
+
+| `op` | Other fields | Answer when it works |
+|------|--------------|----------------------|
+| `cover` | `system`, `game` (an id from the catalog) | `jpeg`: the cover, base64, at most 256 px a side |
+| `launch` | `system`, `game` | nothing more, once EmulationStation was asked to launch it |
+| `pause` | `paused`: `true` or `false` | `paused`: what the daemon believes now |
+| `refresh` | none | nothing more; the catalog is read again |
+
+Answers are `{"id": ..., "ok": true, ...}` or `{"id": ..., "ok": false,
+"error": ...}`, where the error is one of `bad_request`, `unknown_game`,
+`no_cover`, `locked`, `busy`, `not_playing`, `not_pausable`,
+`es_unreachable` or `failed`.
+
+The box launches only games from its own catalog: a request names a game by
+its id, never by a path. It refuses to launch while the lock is on. A launch
+first quits the running game, as `stop` does, and waits for EmulationStation
+to be idle again.
+
+Pause sends the emulator its pause hotkey through Batocera's `hotkeygen`.
+The hotkey toggles, and the emulator says nothing back: `paused` is the
+daemon's belief, not a measurement.
 
 ## Open points
 
