@@ -1,14 +1,16 @@
 """Fixtures for the Home Assistant integration tests."""
 
 from contextlib import asynccontextmanager
+import gzip
 import io
+import json
 import tarfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import asyncssh
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_mqtt_message
 
 from custom_components.batocera import installer
 from custom_components.batocera.const import CONF_TOPIC, DOMAIN
@@ -114,3 +116,30 @@ async def managed_entry(hass, fake_box):
     )
     entry.add_to_hass(hass)
     return entry
+
+
+# A catalog as the daemon publishes it (see the README, "The catalog").
+SONIC, SOR, BARE, MARIO = "9b1c4e0d2a37", "0d5e7a9b3c21", "1a2b3c4d5e6f", "5f4e3d2c1b0a"
+INDEX = [
+    {"name": "megadrive", "fullname": "Sega Mega Drive", "manufacturer": "Sega", "year": 1988,
+     "count": 3, "hash": "aaaaaaaaaaaa"},
+    {"name": "snes", "fullname": "Super Nintendo", "manufacturer": "Nintendo", "year": 1990,
+     "count": 1, "hash": "bbbbbbbbbbbb"},
+]
+ROWS = {
+    "megadrive": [
+        [BARE, "Bare", None, "", "", 0, 0, ""],
+        [SONIC, "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000"],
+        [SOR, "Streets of Rage", 1991, "Beat'em up", "1-2", 2, 1, "20261104T200000"],
+    ],
+    "snes": [[MARIO, "Super Mario World", 1990, "Platform", "1-2", 2, 3, "20261105T090000"]],
+}
+
+
+async def publish_catalog(hass, index=INDEX, rows=ROWS):
+    for name, games in rows.items():
+        async_fire_mqtt_message(
+            hass, f"{TOPIC}/catalog/system/{name}", gzip.compress(json.dumps(games).encode())
+        )
+    async_fire_mqtt_message(hass, f"{TOPIC}/catalog/index", json.dumps(index))
+    await hass.async_block_till_done()

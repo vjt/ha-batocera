@@ -6,7 +6,11 @@ from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 import hashlib
 import json
+import logging
 import math
+import re
+from typing import Any, NamedTuple
+import zlib
 
 from homeassistant.components import mqtt
 from homeassistant.components.mqtt import ReceiveMessage
@@ -18,8 +22,60 @@ from homeassistant.util import dt as dt_util
 
 from .const import CONF_TOPIC, DOMAIN, EVENT_WARNING
 
+_LOGGER = logging.getLogger(__name__)
+
 WARN_BEFORE = timedelta(minutes=5)
 RESEND_STOP = timedelta(minutes=1)
+CATALOG_MAX = 32 * 1024 * 1024  # never inflate a catalog message beyond this
+GAME_ID = re.compile(r"^[0-9a-f]{12}$")
+SYSTEM_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+FAVOURITE, HAS_COVER = 1, 2  # row flags, as the daemon sets them
+
+
+class Game(NamedTuple):
+    """One game of the box's catalog. The box keeps its ROM path to itself."""
+
+    id: str
+    system: str
+    name: str
+    year: int | None
+    genre: str
+    players: str
+    favourite: bool
+    has_cover: bool
+    playcount: int
+    lastplayed: str  # EmulationStation's "20261102T183000", or ""
+
+
+def _load_json(payload: bytes) -> Any:
+    """JSON, gzip-compressed or not."""
+    if payload[:2] == b"\x1f\x8b":
+        inflate = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        payload = inflate.decompress(payload, CATALOG_MAX)
+        if inflate.unconsumed_tail:
+            raise ValueError("catalog too big")
+    return json.loads(payload)
+
+
+def _game(system: str, row: Any) -> Game | None:
+    """A catalog row: [id, name, year, genre, players, flags, playcount, lastplayed]."""
+    if not isinstance(row, list) or len(row) < 8:
+        return None
+    gid, name, year, genre, players, flags, playcount, lastplayed = row[:8]
+    if not isinstance(gid, str) or not GAME_ID.match(gid) or not isinstance(flags, int):
+        return None
+    return Game(
+        gid,
+        system,
+        str(name),
+        year if isinstance(year, int) else None,
+        str(genre or ""),
+        str(players or ""),
+        bool(flags & FAVOURITE),
+        bool(flags & HAS_COVER),
+        playcount if isinstance(playcount, int) else 0,
+        str(lastplayed or ""),
+    )
 
 
 class Box:
@@ -40,6 +96,17 @@ class Box:
         self.started_at: datetime | None = None
         self.cover: bytes | None = None
         self.cover_hash: str | None = None
+        self.version: str | None = None
+        self.game_id: str | None = None
+        self.pausable: bool | None = None  # None: not known
+        self.paused = False
+
+        # The catalog: systems as listed by catalog/index, their games, and
+        # every game by id.
+        self.systems: list[dict[str, Any]] = []
+        self.catalog_hash: str | None = None
+        self._system_games: dict[str, list[Game]] = {}
+        self.games: dict[str, Game] = {}
 
         # Limits, set from the config entities. 0 minutes means no daily
         # limit; equal bounds mean no time window.
@@ -76,6 +143,11 @@ class Box:
             )
         )
         entry.async_on_unload(
+            await mqtt.async_subscribe(
+                self.hass, f"{self.prefix}/catalog/#", self._on_catalog, qos=1, encoding=None
+            )
+        )
+        entry.async_on_unload(
             async_track_time_interval(self.hass, self._tick, timedelta(minutes=1))
         )
 
@@ -107,8 +179,14 @@ class Box:
             self.online = text == "online"
         elif leaf == "state":
             self.state = text or None
-        elif leaf in ("game", "system", "emulator"):
+        elif leaf in ("game", "system", "emulator", "version"):
             setattr(self, leaf, text or None)
+        elif leaf == "game_id":
+            self.game_id = text if GAME_ID.match(text) else None
+        elif leaf == "pausable":
+            self.pausable = {"ON": True, "OFF": False}.get(text)
+        elif leaf == "paused":
+            self.paused = text == "ON"
         elif leaf == "started_at":
             self.started_at = dt_util.parse_datetime(text) if text else None
         elif leaf == "last_session":
@@ -119,6 +197,43 @@ class Box:
         else:
             return
         self._update()
+
+    @callback
+    def _on_catalog(self, msg: ReceiveMessage) -> None:
+        part = msg.topic.removeprefix(f"{self.prefix}/catalog/")
+        payload: bytes = msg.payload  # type: ignore[assignment]
+        try:
+            if part == "index":
+                entries = _load_json(payload) if payload else []
+                self.systems = [
+                    e
+                    for e in entries
+                    if isinstance(e, dict) and SYSTEM_NAME.match(str(e.get("name", "")))
+                ]
+                self.catalog_hash = hashlib.sha256(payload).hexdigest()[:12] if payload else None
+            elif part.startswith("system/"):
+                name = part.removeprefix("system/")
+                rows = _load_json(payload) if payload else []
+                self._system_games[name] = [g for r in rows if (g := _game(name, r))]
+            else:
+                return
+        except (ValueError, TypeError, zlib.error) as err:
+            _LOGGER.warning("%s: bad catalog message on %s: %s", self.name, msg.topic, err)
+            return
+        listed = {e["name"] for e in self.systems}
+        self.games = {
+            g.id: g
+            for name, games in self._system_games.items()
+            if name in listed
+            for g in games
+        }
+        self._update()
+
+    def system_games(self, system: str) -> list[Game]:
+        """The games of a system the index lists, by name."""
+        if not any(e["name"] == system for e in self.systems):
+            return []
+        return self._system_games.get(system, [])
 
     def _publish(self, leaf: str, payload: str, retain: bool = False) -> None:
         self.hass.async_create_task(
