@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components import mqtt
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_HOST, Platform
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 
+from . import installer
 from .box import Box
-from .const import DOMAIN
+from .const import CONF_PRIVATE_KEY, DOMAIN
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
@@ -22,6 +26,8 @@ PLATFORMS = [
     Platform.TIME,
 ]
 
+_LOGGER = logging.getLogger(__name__)
+
 type BatoceraConfigEntry = ConfigEntry[Box]
 
 
@@ -29,6 +35,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> 
     if not await mqtt.async_wait_for_mqtt_client(hass):
         raise ConfigEntryNotReady("MQTT is not available")
     box = Box(hass, entry)
+    if CONF_PRIVATE_KEY in entry.data:  # installed from Home Assistant
+        _keep_daemon_updated(hass, entry, box)
     await box.async_setup(entry)
     entry.runtime_data = box
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -41,3 +49,52 @@ async def async_unload_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) ->
 
 async def async_remove_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> None:
     await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}").async_remove()
+    ir.async_delete_issue(hass, DOMAIN, _issue_id(entry))
+
+
+def _issue_id(entry: ConfigEntry) -> str:
+    return f"daemon_{entry.entry_id}"
+
+
+def _keep_daemon_updated(hass: HomeAssistant, entry: ConfigEntry, box: Box) -> None:
+    """Check the daemon's version each time the box comes online, as soon as
+    it is idle: restarting the daemon during a game would lose that session."""
+    checked = False
+
+    @callback
+    def check() -> None:
+        nonlocal checked
+        if not box.online:
+            checked = False
+        elif box.state == "idle" and not checked:
+            checked = True
+            entry.async_create_background_task(
+                hass, _async_update_daemon(hass, entry), "batocera daemon update"
+            )
+
+    entry.async_on_unload(box.add_listener(check))
+
+
+async def _async_update_daemon(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    try:
+        if await installer.async_update(entry.data):
+            _LOGGER.info("%s: daemon updated to %s", entry.title, installer.VERSION)
+    except installer.InstallError as err:
+        _LOGGER.warning("%s: cannot update the daemon: %s", entry.title, err)
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            _issue_id(entry),
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=(
+                "host_key_mismatch" if err.reason == "host_key_mismatch" else "update_failed"
+            ),
+            translation_placeholders={
+                "name": entry.title,
+                "host": entry.data[CONF_HOST],
+                "error": str(err),
+            },
+        )
+    else:
+        ir.async_delete_issue(hass, DOMAIN, _issue_id(entry))

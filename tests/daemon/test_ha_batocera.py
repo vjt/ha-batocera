@@ -66,6 +66,13 @@ class TempDirTest(unittest.TestCase):
         self.tmp = Path(tmp.name)
 
 
+class VersionTest(unittest.TestCase):
+    def test_matches_the_integration(self):
+        # Home Assistant reinstalls the daemon when the box has another one.
+        manifest = json.loads((DAEMON.parent / "manifest.json").read_text())
+        self.assertEqual((DAEMON / "VERSION").read_text().strip(), manifest["version"])
+
+
 class ConfTest(TempDirTest):
     def test_read_conf(self):
         path = self.tmp / "conf"

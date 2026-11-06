@@ -3,21 +3,75 @@
     "step": {
       "user": {
         "title": "Batocera",
-        "description": "Connect a Batocera box running the ha-batocera daemon. The MQTT integration must be set up first.",
+        "description": "Connect a Batocera box. The MQTT integration must be set up first.",
+        "menu_options": {
+          "install": "Install ha-batocera on the box",
+          "manual": "The box already runs ha-batocera"
+        }
+      },
+      "install": {
+        "title": "Install on the box",
+        "description": "Home Assistant connects to the box over SSH as root, adds an SSH key of its own to root's authorized keys, and installs the ha-batocera daemon. From then on it uses that key to keep the daemon up to date.",
+        "data": {
+          "name": "Name",
+          "host": "Box host",
+          "password": "Root password",
+          "mqtt_host": "Broker host",
+          "mqtt_port": "Broker port",
+          "mqtt_user": "MQTT user",
+          "mqtt_password": "MQTT password"
+        },
+        "data_description": {
+          "name": "The box's MQTT topics go under batocera/ and this name, in lower case, with underscores for spaces.",
+          "host": "Host name or IP address of the box.",
+          "password": "Batocera's default root password is linux. It is used for this install only and is not stored.",
+          "mqtt_host": "The broker as the box reaches it: an address on your network, not core-mosquitto or localhost.",
+          "mqtt_user": "An account for the box. Leave empty if the broker needs none."
+        }
+      },
+      "manual": {
+        "title": "Box already set up",
+        "description": "Connect a box where the ha-batocera daemon was installed by hand.",
         "data": {
           "name": "Name",
           "topic": "Topic prefix"
         },
         "data_description": {
-          "topic": "batocera/<device>, where <device> is the name set in ha-batocera.conf on the box."
+          "topic": "batocera/ and the device name set in ha-batocera.conf on the box."
+        }
+      },
+      "reconfigure": {
+        "title": "Pair again",
+        "description": "Home Assistant connects with the root password, trusts the SSH host key the box has now, replaces its own SSH key on the box and reinstalls the daemon. The settings on the box are kept.",
+        "data": {
+          "host": "Box host",
+          "password": "Root password"
+        },
+        "data_description": {
+          "password": "Used for this step only, not stored."
         }
       }
     },
     "error": {
-      "invalid_topic": "Enter a topic without wildcards (+ or #)."
+      "invalid_topic": "Enter a topic without wildcards (+ or #).",
+      "cannot_connect": "Cannot connect to the box over SSH.",
+      "invalid_auth": "The box refused the root password.",
+      "host_key_mismatch": "The box's SSH host key changed during the install.",
+      "install_failed": "The install failed on the box. The Home Assistant log has the details."
     },
     "abort": {
-      "already_configured": "This box is already configured."
+      "already_configured": "This box is already configured.",
+      "reconfigure_successful": "The box is paired again."
+    }
+  },
+  "issues": {
+    "host_key_mismatch": {
+      "title": "{name}: SSH host key changed",
+      "description": "The SSH host key of {name} ({host}) is not the one Home Assistant trusted when it was set up, so Home Assistant does not connect to it and does not update the ha-batocera daemon.\n\nIf Batocera was reinstalled or the key was replaced on purpose, reconfigure the Batocera integration for this box with the root password: it then trusts the new key. If not, something on your network may be posing as the box."
+    },
+    "update_failed": {
+      "title": "{name}: cannot update ha-batocera",
+      "description": "Home Assistant could not check or update the ha-batocera daemon on {name} ({host}): {error}\n\nIt tries again the next time the box comes online, or when the integration is reloaded. If the box no longer accepts Home Assistant's SSH key, reconfigure the Batocera integration for this box with the root password."
     }
   }
 }

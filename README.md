@@ -52,18 +52,83 @@ EmulationStation's web API (port 1234).
 - `stop` runs `batocera-es-swissknife --emukill`; if the launcher is still
   alive 5 seconds later, the daemon kills its process tree.
 
-## Install on Batocera
+## Install
 
-You need a Batocera release that has `batocera-services` (user services in
-`/userdata/system/services`), and an MQTT broker reachable from the box.
+You need an MQTT broker that the box can reach, Home Assistant's
+[MQTT integration](https://www.home-assistant.io/integrations/mqtt/) connected
+to it, and a Batocera release that has `batocera-services` (user services in
+`/userdata/system/services`). Each box is one entry of the integration.
 
-Copy the `custom_components/batocera/daemon/` folder to the box and run the installer there as root,
-for example:
+### The Home Assistant integration
+
+With [HACS](https://hacs.xyz): HACS, three dots menu, Custom repositories, add
+`https://github.com/vjt/ha-batocera` with type Integration, then install
+"Batocera" and restart Home Assistant.
+
+Manually: copy `custom_components/batocera/` into the `custom_components/`
+folder of your Home Assistant configuration and restart.
+
+### The daemon on the box, from Home Assistant
+
+Settings, Devices & services, Add integration, "Batocera", then "Install
+ha-batocera on the box". Give the box a name (its topics go under
+`batocera/<name>`, in lower case with underscores for spaces), its host name or
+address, its root password (Batocera's default is `linux`) and the broker
+settings for the box.
+
+Home Assistant then connects to the box over SSH as root, with the password:
+
+- it trusts the box's SSH host key from this first connection on (Batocera
+  keeps its host keys in `/userdata/system/ssh`, so they survive upgrades);
+- it generates an ed25519 key pair of its own and adds the public key to
+  `/userdata/system/.ssh/authorized_keys`, root's, with the comment
+  `ha-batocera`, replacing the key of any earlier pairing;
+- it copies the daemon to the box and runs its installer with your settings,
+  the MQTT password on the installer's standard input, never on a command
+  line.
+
+The root password is used for that connection only and is not stored. Home
+Assistant keeps the private key and the host key in its config entry.
+
+The broker settings are asked for, not copied from Home Assistant's MQTT
+integration: that may name a broker only Home Assistant can reach
+(`core-mosquitto`, `localhost`), and its account usually has far more rights
+than a box needs. Give the box an account of its own (see the ACLs under
+"MQTT topics").
+
+**Updates.** Each time the box comes online, as soon as no game is running,
+Home Assistant compares the daemon version on the box with the one it ships.
+If they differ, it installs its own and restarts the service, keeping the
+settings on the box. A game in progress is never interrupted: restarting the
+daemon would lose that session.
+
+**Problems** show up under Settings, Repairs. A failed update is tried again
+the next time the box comes online, or when the integration is reloaded. If
+the box presents an SSH host key other than the one trusted at setup, Home
+Assistant does not connect to it and says so. If Batocera was reinstalled, or
+the key was replaced on purpose, reconfigure the integration (three dots menu
+of the box, Reconfigure) with the root password: Home Assistant trusts the key
+the box has now, installs a new key of its own and reinstalls the daemon.
+Reconfigure is also the way out for a box whose daemon does not run (it never
+comes online, so it is never updated), and it hands a box set up by hand over
+to Home Assistant.
+
+### The daemon on the box, by hand
+
+Copy the `custom_components/batocera/daemon/` folder to the box and run the
+installer there as root, for example:
 
 ```sh
 scp -r custom_components/batocera/daemon root@batocera.local:/tmp/ha-batocera
 ssh root@batocera.local /tmp/ha-batocera/install.sh
 ```
+
+Then, in Home Assistant: Settings, Devices & services, Add integration,
+"Batocera", "The box already runs ha-batocera". Give the box a name and its
+topic prefix, `batocera/<device>`. Home Assistant does not update a box set up
+this way.
+
+### The installer
 
 The installer asks for a device name (used in the topics, default: the
 hostname in lower case), the broker host and port, and the MQTT user and
@@ -108,30 +173,18 @@ After changing any of them: `batocera-services stop ha_batocera; batocera-servic
 
 ### Uninstall
 
+On the box:
+
 ```sh
 /userdata/system/ha-batocera/uninstall.sh
 ```
 
-It stops and removes the service, the hook and the daemon, and clears the
-retained messages under `batocera/<device>/`.
+It stops and removes the service, the hook and the daemon, removes Home
+Assistant's SSH key, and clears the retained messages under
+`batocera/<device>/`. Then delete the box from the integration in Home
+Assistant.
 
-## Install the Home Assistant integration
-
-The [MQTT integration](https://www.home-assistant.io/integrations/mqtt/) must
-be set up first, connected to the same broker.
-
-With [HACS](https://hacs.xyz): HACS, three dots menu, Custom repositories, add
-`https://github.com/vjt/ha-batocera` with type Integration, then install
-"Batocera" and restart Home Assistant.
-
-Manually: copy `custom_components/batocera/` into the `custom_components/`
-folder of your Home Assistant configuration and restart.
-
-Then Settings, Devices & services, Add integration, "Batocera". Give the box a
-name and its topic prefix, `batocera/<device>`. Add the integration once per
-box.
-
-### Entities
+## Entities
 
 For a box named "Arcade":
 
@@ -260,14 +313,19 @@ python3 -m unittest discover -s tests/daemon -v
 
 Integration tests, with
 [pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component)
-(last run with 0.13.375, that is Home Assistant 2026.10.4), in a throwaway
-container:
+(last run with 0.13.375, that is Home Assistant 2026.10.4) and the
+integration's requirement from `manifest.json`, in a throwaway container. SSH
+is faked: they never connect anywhere.
 
 ```sh
 docker run --rm -v "$PWD":/src:ro python:3.14-slim sh -c '
-  pip install -q pytest-homeassistant-custom-component &&
+  pip install -q pytest-homeassistant-custom-component asyncssh==2.24.0 &&
   cp -r /src /repo && cd /repo && python -m pytest -p no:cacheprovider'
 ```
+
+`custom_components/batocera/daemon/VERSION` must equal the `version` in
+`manifest.json` (a daemon test checks it): Home Assistant reinstalls the daemon
+on boxes that report another version, so bump both for every release.
 
 ## License
 
