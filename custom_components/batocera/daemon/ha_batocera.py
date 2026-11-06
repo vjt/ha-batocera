@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import selectors
 import signal
 import socket
@@ -25,11 +26,13 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import quote
 
 HOME = Path(os.environ.get("HA_BATOCERA_HOME", "/userdata/system/ha-batocera"))
 FIFO = Path(os.environ.get("HA_BATOCERA_FIFO", "/var/run/ha-batocera.fifo"))
 ROMS = Path("/userdata/roms")
+ES_SETTINGS = Path("/userdata/system/configs/emulationstation/es_settings.cfg")
 
 CHECK_EVERY = 15        # seconds between launcher pid checks
 STOP_GRACE = 5          # seconds the launcher gets to exit after --emukill
@@ -122,6 +125,113 @@ def make_cover(image, run=subprocess.run):
                     image, out.returncode, len(out.stdout or b""))
         return None
     return out.stdout
+
+
+def es_settings(path=ES_SETTINGS):
+    """EmulationStation's settings, name -> value; {} if unreadable.
+
+    Lines look like <bool name="PublicWebAccess" value="true" />.
+    """
+    try:
+        text = Path(path).read_text(errors="replace")
+    except OSError:
+        return {}
+    return dict(re.findall(r'<\w+\s+name="([^"]*)"\s+value="([^"]*)"', text))
+
+
+# --- the catalog ------------------------------------------------------------
+#
+# What EmulationStation's /systems and /systems/<name>/games answer is read
+# here only. Booleans come as the strings "true" and "false".
+
+FAVOURITE, HAS_COVER = 1, 2     # row flags
+COVER_KEYS = ("thumbnail", "image")  # media for the cover, the first there is
+SYSTEM_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")  # usable as a topic level
+
+
+class Rom(NamedTuple):
+    """What the daemon keeps to itself about a game: Home Assistant only
+    ever names a game by its id."""
+    system: str
+    path: str
+    es_id: str
+    media: "str | None"  # the media key of its cover
+
+
+class SystemCatalog(NamedTuple):
+    entry: dict         # for catalog/index
+    data: bytes         # the rows, as compact JSON
+    roms: dict          # id -> Rom
+
+
+def truthy(value):
+    return value is True or str(value).lower() == "true"
+
+
+def es_year(value):
+    """1991 from EmulationStation's "19910623T000000" or "1991"."""
+    match = re.match(r"(\d{4})", str(value or ""))
+    return int(match[1]) if match and int(match[1]) else None
+
+
+def es_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def catalog_system(system, games, kid_mode):
+    """One system's catalog, or None when no game of it is shown."""
+    name = system["name"]
+    rows, roms = {}, {}
+    for game in games:
+        path = game.get("path")
+        if not isinstance(path, str) or not path or truthy(game.get("hidden")):
+            continue
+        if kid_mode and not truthy(game.get("kidgame")):
+            continue
+        gid = game_id(path)
+        media = next((key for key in COVER_KEYS if game.get(key)), None)
+        flags = (FAVOURITE if truthy(game.get("favorite")) else 0) | (HAS_COVER if media else 0)
+        rows[gid] = [gid, str(game.get("name") or Path(path).stem),
+                     es_year(game.get("releasedate")), str(game.get("genre") or ""),
+                     str(game.get("players") or ""), flags, es_int(game.get("playcount")),
+                     str(game.get("lastplayed") or "")]
+        roms[gid] = Rom(name, os.path.normpath(path), str(game.get("id", "")), media)
+    if not rows:
+        return None
+    ordered = sorted(rows.values(), key=lambda row: (row[1].casefold(), row[0]))
+    data = json.dumps(ordered, separators=(",", ":"), ensure_ascii=False).encode()
+    entry = {
+        "name": name,
+        "fullname": str(system.get("fullname") or name),
+        "manufacturer": str(system.get("manufacturer") or ""),
+        "year": es_year(system.get("releaseYear")),
+        "count": len(ordered),
+        "hash": hashlib.sha256(data).hexdigest()[:12],
+    }
+    return SystemCatalog(entry, data, roms)
+
+
+def catalog_systems(systems):
+    """The systems shown: visible game systems, no collections."""
+    return [s for s in systems
+            if isinstance(s, dict) and SYSTEM_NAME.match(str(s.get("name", "")))
+            and truthy(s.get("visible")) and truthy(s.get("gamesystem"))
+            and not truthy(s.get("collection"))]
+
+
+def build_catalog(systems, games, kid_mode=False):
+    """name -> SystemCatalog, from /systems and {name: /games} (systems
+    whose games are missing are left out). In Kid mode, kid games only."""
+    catalog = {}
+    for system in catalog_systems(systems):
+        if system["name"] in games:
+            found = catalog_system(system, games[system["name"]], kid_mode)
+            if found:
+                catalog[system["name"]] = found
+    return catalog
 
 
 class EsError(Exception):

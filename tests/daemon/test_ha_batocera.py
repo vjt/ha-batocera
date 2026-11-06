@@ -228,6 +228,67 @@ class CoverTest(TempDirTest):
             self.assertIsNone(hb.make_cover(str(self.tmp / "nope.png")))
 
 
+class CatalogTest(TempDirTest):
+    def build(self, kid=False, games=None):
+        return hb.build_catalog(SYNTHETIC["systems"], games or SYNTHETIC["games"], kid)
+
+    def test_only_visible_game_systems(self):
+        # Not collections, not the screenshot viewer, not hidden systems, and
+        # never a name that would not make a plain MQTT topic.
+        self.assertEqual(list(self.build()), ["megadrive", "snes"])
+
+    def test_index_entry(self):
+        entry = self.build()["megadrive"].entry
+        self.assertEqual({k: v for k, v in entry.items() if k != "hash"}, {
+            "name": "megadrive", "fullname": "Sega Mega Drive", "manufacturer": "Sega",
+            "year": 1988, "count": 4})
+        self.assertRegex(entry["hash"], r"^[0-9a-f]{12}$")
+
+    def test_rows(self):
+        rows = json.loads(self.build()["megadrive"].data)
+        sonic = hb.game_id("/userdata/roms/megadrive/Sonic.zip")
+        sor = hb.game_id("/userdata/roms/megadrive/Streets of Rage.zip")
+        self.assertEqual(rows, [  # by name; the hidden game is left out
+            [hb.game_id("/userdata/roms/megadrive/Bare.zip"), "Bare", None, "", "", 0, 0, ""],
+            [hb.game_id("/userdata/roms/megadrive/Comix Zone.zip"), "Comix Zone", None, "", "", 0, 0, ""],
+            [sonic, "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000"],
+            [sor, "Streets of Rage", 1991, "Beat'em up", "1-2", 2, 0, ""],
+        ])
+
+    def test_roms_stay_on_the_box(self):
+        roms = self.build()["megadrive"].roms
+        sonic = roms[hb.game_id("/userdata/roms/megadrive/Sonic.zip")]
+        self.assertEqual(sonic, hb.Rom("megadrive", "/userdata/roms/megadrive/Sonic.zip", "a0", "thumbnail"))
+        sor = roms[hb.game_id("/userdata/roms/megadrive/Streets of Rage.zip")]
+        self.assertEqual(sor.media, "image")  # no thumbnail: the image
+        self.assertIsNone(roms[hb.game_id("/userdata/roms/megadrive/Bare.zip")].media)
+
+    def test_kid_mode(self):
+        catalog = self.build(kid=True)
+        self.assertEqual(list(catalog), ["megadrive"])  # snes has no kid game
+        names = [r[1] for r in json.loads(catalog["megadrive"].data)]
+        self.assertEqual(names, ["Comix Zone", "Sonic the Hedgehog"])
+
+    def test_hash_follows_the_games(self):
+        games = json.loads(json.dumps(SYNTHETIC["games"]))
+        before = self.build(games=games)["snes"].entry["hash"]
+        self.assertEqual(self.build(games=games)["snes"].entry["hash"], before)
+        games["snes"][0]["playcount"] = "1"
+        self.assertNotEqual(self.build(games=games)["snes"].entry["hash"], before)
+
+    def test_missing_games_are_skipped(self):
+        games = {"megadrive": SYNTHETIC["games"]["megadrive"]}  # snes not fetched
+        self.assertEqual(list(self.build(games=games)), ["megadrive"])
+
+    def test_es_settings(self):
+        path = self.tmp / "es_settings.cfg"
+        path.write_text('<?xml version="1.0"?>\n<config>\n'
+                        '\t<bool name="PublicWebAccess" value="true" />\n'
+                        '\t<string name="UIMode" value="Kid" />\n</config>\n')
+        self.assertEqual(hb.es_settings(path), {"PublicWebAccess": "true", "UIMode": "Kid"})
+        self.assertEqual(hb.es_settings(self.tmp / "nope"), {})
+
+
 class EsApiTest(unittest.TestCase):
     def setUp(self):
         self.fake = FakeEs()
