@@ -1,9 +1,10 @@
 {
   "domain": "batocera",
   "name": "Batocera",
+  "after_dependencies": ["http", "lovelace"],
   "codeowners": ["@vjt"],
   "config_flow": true,
-  "dependencies": ["mqtt"],
+  "dependencies": ["frontend", "mqtt"],
   "documentation": "https://github.com/vjt/ha-batocera",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/vjt/ha-batocera/issues",

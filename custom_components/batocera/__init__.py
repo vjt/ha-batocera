@@ -40,7 +40,10 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    from .dashboard import async_setup_dashboard
+
     websocket_api.async_register_command(hass, ws_access)
+    await async_setup_dashboard(hass)
     return True
 
 
@@ -71,11 +74,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> 
     await box.async_setup(entry)
     entry.runtime_data = box
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = box
+
+    from .dashboard import async_save_dashboard
+
+    await async_save_dashboard(hass)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> bool:
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
+    hass.data[DOMAIN].pop(entry.entry_id, None)
+
+    from .dashboard import async_save_dashboard
+
+    await async_save_dashboard(hass)
+    return True
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> None:

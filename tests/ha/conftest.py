@@ -6,7 +6,7 @@ import io
 import json
 import tarfile
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import asyncssh
 import pytest
@@ -25,6 +25,18 @@ ROOT_PASSWORD = "root-secret"
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations):
     yield
+
+
+@pytest.fixture(autouse=True)
+def no_dashboard(hass):
+    """The frontend is taken as set up (the real one needs its build), and
+    the page, which needs Lovelace and the http server, is tested on its
+    own in test_dashboard.py."""
+    hass.config.components.add("frontend")
+    with patch("custom_components.batocera.dashboard.async_setup_dashboard", AsyncMock()), patch(
+        "custom_components.batocera.dashboard.async_save_dashboard", AsyncMock()
+    ):
+        yield
 
 
 @pytest.fixture
