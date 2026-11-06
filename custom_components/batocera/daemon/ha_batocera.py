@@ -36,6 +36,9 @@ HOME = Path(os.environ.get("HA_BATOCERA_HOME", "/userdata/system/ha-batocera"))
 FIFO = Path(os.environ.get("HA_BATOCERA_FIFO", "/var/run/ha-batocera.fifo"))
 ROMS = Path("/userdata/roms")
 ES_SETTINGS = Path("/userdata/system/configs/emulationstation/es_settings.cfg")
+# Batocera's hotkeygen (41 and later) keeps the hotkeys of the running
+# emulator here; 43 writes JSON. Later releases may move it to D-Bus.
+HOTKEYS = Path("/var/run/hotkeygen.context")
 
 CHECK_EVERY = 15        # seconds between launcher pid checks
 STOP_GRACE = 5          # seconds the launcher gets to exit after --emukill
@@ -56,6 +59,7 @@ CATALOG_AFTER_GAME = 10  # seconds after a game, for its play count to be saved
 LAUNCH_IDLE_WAIT = 10   # seconds for EmulationStation to be idle before a launch
 LAUNCH_POLL = 1         # seconds between asks whether it is
 LAUNCH_START_WAIT = 30  # seconds for a launched game to start
+PAUSABLE_AFTER = 5      # seconds after a start: the launcher sets the hotkeys after the hook
 
 log = logging.getLogger("ha-batocera")
 
@@ -140,6 +144,27 @@ def make_cover(image, run=subprocess.run, size=COVER_SIZE, nice=False):
                     image, out.returncode, len(out.stdout or b""))
         return None
     return out.stdout
+
+
+def pausable_from(text):
+    """Whether hotkeygen's context maps a pause hotkey; None if unreadable.
+
+    The context is read as JSON, {"name": ..., "keys": {action: key...}},
+    or a bare {action: key...}. Not checked against a box yet.
+    """
+    try:
+        context = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(context, dict):
+        return None
+    keys = context.get("keys", context)
+    return "pause" in keys if isinstance(keys, dict) else None
+
+
+def on_off(value):
+    """ON, OFF or empty (not known) for a retained flag."""
+    return {True: "ON", False: "OFF"}.get(value, "")
 
 
 def es_settings(path=ES_SETTINGS):
@@ -345,13 +370,14 @@ def descendants(pid):
 
 class Daemon:
     def __init__(self, base, env, run=subprocess.run, now=time.time, es=None,
-                 settings=es_settings):
+                 settings=es_settings, hotkeys=HOTKEYS):
         self.base = base
         self.env = env
         self.run = run
         self.now = now
         self.es = es or EsApi()
         self.settings = settings
+        self.hotkeys = hotkeys
         self.game = None      # the session being played, or None
         self.locked = False   # retained by Home Assistant on <base>/lock
         self.stopping = False
@@ -410,6 +436,8 @@ class Daemon:
             ("emulator", g.get("emulator", "")),
             ("started_at", iso(g["started"]) if g else ""),
             ("cover", g.get("cover") or b""),
+            ("pausable", on_off(g.get("pausable"))),
+            ("paused", on_off(g.get("paused")) if g else ""),
         ]
         state = ("state", "playing" if g else "idle")
         # Details before "playing", "idle" before clearing them.
@@ -454,6 +482,7 @@ class Daemon:
         handler = {
             "cover": self.req_cover,
             "launch": self.req_launch,
+            "pause": self.req_pause,
             "refresh": self.req_refresh,
         }.get(req.get("op"))
         if handler is None:
@@ -546,6 +575,42 @@ class Daemon:
         log.warning("%s did not start within %ds", self.launching["rom"].path, LAUNCH_START_WAIT)
         self.launching = None
 
+    def req_pause(self, rid, req):
+        """Pause or resume through the emulator's pause hotkey. It toggles and
+        says nothing back: "paused" is what the daemon believes."""
+        want = req.get("paused")
+        if not isinstance(want, bool):
+            return self.respond(rid, "bad_request")
+        if not self.game:
+            return self.respond(rid, "not_playing")
+        if self.game["pausable"] is False:
+            return self.respond(rid, "not_pausable")
+        if self.game["paused"] != want:
+            try:
+                out = self.run(["hotkeygen", "--send", "pause"], capture_output=True, timeout=10)
+            except (OSError, subprocess.SubprocessError) as err:
+                log.warning("pause: %s", err)
+                return self.respond(rid, "failed")
+            if out.returncode:
+                log.warning("pause: hotkeygen rc %d %s", out.returncode,
+                            out.stderr.decode(errors="replace").strip())
+                return self.respond(rid, "failed")
+            log.info("%s %s", "paused" if want else "resumed", self.game["name"])
+            self.game["paused"] = want
+            self.pub("paused", on_off(want))
+        self.respond(rid, paused=self.game["paused"])
+
+    def check_pausable(self):
+        """Read whether the running emulator has a pause hotkey."""
+        if not self.game:
+            return
+        try:
+            pausable = pausable_from(self.hotkeys.read_text())
+        except OSError:
+            pausable = None
+        self.game["pausable"] = pausable
+        self.pub("pausable", on_off(pausable))
+
     def req_refresh(self, rid, req):
         log.info("catalog refresh requested")
         self.respond(rid, None if self.refresh_catalog() else "es_unreachable")
@@ -626,9 +691,12 @@ class Daemon:
             "emulator": emulator if core in ("", emulator) else f"{emulator}/{core}",
             "started": self.now(),
             "cover": make_cover(image, self.run) if image else None,
+            "pausable": None,  # not known until the launcher sets the hotkeys
+            "paused": False,
         }
         log.info("playing %s (%s)", name, system)
         self.publish_game()
+        self.at("pausable", PAUSABLE_AFTER, self.check_pausable)
         if self.locked:
             # The hook cannot refuse a launch: its exit code is ignored.
             log.info("locked: stopping %s", name)
@@ -637,6 +705,7 @@ class Daemon:
     def end(self):
         g, self.game = self.game, None
         ended = self.now()
+        self.timers.pop("pausable", None)
         # EmulationStation saves the play count once the launcher returns.
         self.at("catalog_game", CATALOG_AFTER_GAME,
                 lambda: self.refresh_catalog(only=g["system"]))

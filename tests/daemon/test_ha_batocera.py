@@ -642,6 +642,75 @@ class RequestTest(unittest.TestCase):
         self.assertEqual([json.loads(p)["error"] for t, p in self.run.published()],
                          ["es_unreachable"])
 
+    def play(self, hotkeys):
+        self.d.hotkeys = Path(self.tmp.name) / "hotkeygen.context"
+        if hotkeys is not None:
+            self.d.hotkeys.write_text(hotkeys)
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.on_line(self.start_line())
+        self.clock.t += hb.PAUSABLE_AFTER
+        self.run.calls.clear()
+        self.d.run_timers()
+        return self.run.published()
+
+    def test_pausable(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        for hotkeys, flag in [
+            ('{"name": "retroarch", "keys": {"exit": ["KEY_LEFTCTRL", "KEY_C"], "pause": "KEY_P"}}', "ON"),
+            ('{"name": "dolphin", "keys": {"exit": ["KEY_LEFTALT", "KEY_F4"]}}', "OFF"),
+            ('{"exit": "KEY_ESC", "pause": "KEY_P"}', "ON"),
+            ("not json", None),
+            (None, None),  # no context file
+        ]:
+            with self.subTest(hotkeys=hotkeys):
+                self.assertEqual(self.play(hotkeys), [("batocera/test/pausable", flag)])
+
+    def test_pause_and_resume(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.play('{"name": "mame", "keys": {"pause": "KEY_P"}}')
+        self.run.calls.clear()
+        with self.assertLogs(hb.log, "INFO"):
+            self.assertEqual(self.answer(op="pause", paused=True),
+                             {"id": "0123abcd", "ok": True, "paused": True})
+        self.assertIn((["hotkeygen", "--send", "pause"], None), self.calls)
+        self.assertIn(("batocera/test/paused", "ON"), [
+            (c[c.index("-t") + 1], i.decode()) for c, i in self.calls if c[0] == "mosquitto_pub"])
+        # Already paused: no hotkey, it would resume.
+        self.assertEqual(self.answer(op="pause", paused=True)["paused"], True)
+        self.assertNotIn((["hotkeygen", "--send", "pause"], None), self.calls)
+        with self.assertLogs(hb.log, "INFO"):
+            self.assertEqual(self.answer(op="pause", paused=False)["paused"], False)
+        self.assertIn((["hotkeygen", "--send", "pause"], None), self.calls)
+
+    def test_pause_refused(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.assertEqual(self.answer(op="pause", paused=True)["error"], "not_playing")
+        self.play('{"name": "dolphin", "keys": {"exit": "KEY_ESC"}}')
+        self.assertEqual(self.answer(op="pause", paused="yes")["error"], "bad_request")
+        self.assertEqual(self.answer(op="pause", paused=True)["error"], "not_pausable")
+        self.assertNotIn("hotkeygen", [c[0] for c, _ in self.calls])
+
+    def test_pause_when_not_known_is_tried(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.play(None)
+
+        class NoHotkeygen(Recorder):
+            def __call__(self, cmd, input=None, **kwargs):
+                super().__call__(cmd, input, **kwargs)
+                if cmd[0] == "hotkeygen":
+                    raise FileNotFoundError("hotkeygen")
+                return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        self.d.run = self.run = NoHotkeygen()
+        with self.assertLogs(hb.log, "WARNING"):
+            self.assertEqual(self.answer(op="pause", paused=True)["error"], "failed")
+        self.assertIn((["hotkeygen", "--send", "pause"], None), self.calls)
+        self.assertFalse(self.d.game["paused"])
+
     def test_refresh(self):
         self.fake.games = dict(SYNTHETIC["games"], snes=[])
         with self.assertLogs(hb.log, "INFO"):
@@ -687,6 +756,8 @@ class DaemonTest(TempDirTest):
                 ("batocera/test/emulator", "libretro/genesisplusgx"),
                 ("batocera/test/started_at", "2023-11-14T22:13:20+00:00"),
                 ("batocera/test/cover", None),
+                ("batocera/test/pausable", None),  # not known yet
+                ("batocera/test/paused", "OFF"),
                 ("batocera/test/state", "playing"),
             ])
             self.run.calls.clear()
@@ -698,7 +769,8 @@ class DaemonTest(TempDirTest):
         self.assertEqual([t for t, p in published[2:] if p is None],
                          ["batocera/test/game", "batocera/test/game_id", "batocera/test/system",
                           "batocera/test/emulator", "batocera/test/started_at",
-                          "batocera/test/cover"])
+                          "batocera/test/cover", "batocera/test/pausable",
+                          "batocera/test/paused"])
         self.assertEqual(json.loads(published[0][1]), {
             "game": "Bare", "system": "megadrive", "emulator": "libretro/genesisplusgx",
             "started_at": "2023-11-14T22:13:20+00:00", "ended_at": "2023-11-14T22:15:25+00:00",
