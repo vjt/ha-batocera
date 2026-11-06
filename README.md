@@ -9,7 +9,10 @@ Connects a [Batocera](https://batocera.org) retro-gaming box to
   are written;
 - parental-style limits: a daily playtime cap and a time window in which games
   are allowed, with a warning before the end. Batocera has no user profiles,
-  so limits apply to the whole box.
+  so limits apply to the whole box;
+- a Batocera page in Home Assistant's sidebar: the box's games to browse, with
+  their covers, and to launch, pause and quit, for admins and the users you
+  allow. The limits apply to games launched from there too.
 
 Two parts live in this repository:
 
@@ -22,8 +25,9 @@ The daemon lives inside the integration so that HACS ships it too.
 
 Nothing else is needed: the daemon talks to the broker through the
 `mosquitto_pub` and `mosquitto_sub` clients Batocera already ships, and the
-integration uses Home Assistant's built-in MQTT integration. It does not use
-EmulationStation's web API (port 1234).
+integration uses Home Assistant's built-in MQTT integration. The daemon reads
+the games from EmulationStation's web API, and asks it to launch them, on the
+box's own loopback address only: the browser never talks to the box.
 
 ```
  Batocera                                   MQTT broker           Home Assistant
@@ -32,6 +36,8 @@ EmulationStation's web API (port 1234).
                                    v
                           ha_batocera.py --- batocera/<device>/* ---> batocera integration
           batocera-es-swissknife <-------- cmd (stop), lock <-------- limits, stop button
+ EmulationStation  <-127.0.0.1:1234-- |  --- catalog/*, resp/* ----->  media player, panel
+ (games, launch)                      | <-------- req (cover, launch, pause, refresh)
 ```
 
 ## How it works
@@ -51,6 +57,16 @@ EmulationStation's web API (port 1234).
   (mode 600), never on a command line where `ps` would show them.
 - `stop` runs `batocera-es-swissknife --emukill`; if the launcher is still
   alive 5 seconds later, the daemon kills its process tree.
+- The catalog of games comes from EmulationStation's web API on
+  `127.0.0.1:1234` and is published as retained messages, one per system,
+  gzip-compressed (see "The catalog"). Covers for it are sent on request,
+  downscaled to 256 pixels at the lowest CPU priority, and kept by Home
+  Assistant for a week.
+- A launch quits the running game first, then asks EmulationStation to launch
+  the new one, as if it were picked in its menus: the hook, the lock and the
+  limits see an ordinary launch.
+- Pause sends the emulator's pause hotkey through Batocera's `hotkeygen`,
+  offered when the emulator has one.
 
 ## Install
 
@@ -174,8 +190,10 @@ After changing any of them: `batocera-services stop ha_batocera; batocera-servic
   to remove it and clear the retained messages it left.
 - **EmulationStation's web API.** With `PublicWebAccess` on, port 1234 is open
   to the whole network without authentication: anyone on the LAN can launch or
-  kill games and send input. ha-batocera does not need it. The installer
-  prints how to restrict it to the box itself.
+  kill games and send input. ha-batocera uses it from the box itself only. The
+  installer prints how to restrict it to the box, and Home Assistant shows the
+  same advice as a warning under Settings, Repairs for as long as the box
+  reports the setting on. Neither changes it for you.
 - **`es_web_notifier`.** When enabled, this service listens on port 8080 for
   the whole network, without authentication. The installer prints how to turn
   it off, if nothing else of yours uses it.
@@ -199,7 +217,7 @@ For a box named "Arcade":
 
 | Entity | What |
 |--------|------|
-| `media_player.arcade` | playing / idle / off; title = game, source = system, app = emulator, picture = cover. Stop quits the game |
+| `media_player.arcade` | playing / paused / idle / off; title = game, source = system, app = emulator, picture = cover. Browse lists the box's games; play media launches one; pause and play pause and resume it; stop quits it. Attributes: `pausable`, `minutes_left` (while playing; null when nothing limits the time), `catalog` |
 | `binary_sensor.arcade_playing` | on while a game runs |
 | `sensor.arcade_game`, `sensor.arcade_system` | the running game and system |
 | `sensor.arcade_session_start` | when the running game started |
@@ -213,6 +231,35 @@ For a box named "Arcade":
 The entities that mirror the box become unavailable when it is unreachable
 (MQTT will). After a clean shutdown the media player shows "off" instead.
 Playtime and limits are kept by Home Assistant and stay available.
+
+## The Batocera page
+
+The integration adds a **Batocera** page to the sidebar, with one tab per box.
+At the top, what is playing: cover, name, system, time played, and the time
+left before the daily limit or the end of the window (or FREE PLAY), with
+pause and a two-tap kill. Below, the box's games: favourites, recently played
+and one folder per system, with a search. Tap a game, then PRESS START: the
+running game is quit and the new one launched.
+
+Everyone who can open Home Assistant sees the page and browses the games.
+**Launching, pausing and stopping games** takes an admin, or a user picked in
+the integration's options (Settings, Devices & services, Batocera, Configure:
+"Who may play"). Nobody else by default. This applies to the media player and
+the stop button everywhere in Home Assistant, not only to the page; calls from
+automations, which have no user, are allowed. Before this page existed, any
+user could stop a game.
+
+Launching is refused while the box is locked (manual lock, outside the window
+or over the daily limit), and the box itself refuses a launch while its lock
+is on. A game launched some other way while locked is still stopped as soon
+as it starts.
+
+The games can also be browsed and launched from Home Assistant's own media
+browser, and launched by automations with `media_player.play_media`, using the
+ids the browser shows (`game:<system>:<id>`).
+
+When EmulationStation is in Kid mode, only the games marked as kid games are
+listed. Hidden games never are.
 
 ## Limits
 
@@ -379,6 +426,17 @@ daemon's belief, not a measurement.
 - **Gamelists in other places.** Only the `gamelist.xml` next to the ROMs, or
   in a folder above them up to `/userdata/roms`, is read. Without one, the
   game name is the ROM file name and there is no cover.
+- **Not checked on a box yet.** The catalog, launch and pause were written from
+  EmulationStation's and Batocera's sources and tested against made-up
+  answers: the shape of the web API's answers, the path it gives for a game
+  (the catalog's ids hash it, and must match the hook's ROM path), the media
+  keys, how long a launch takes after a game was quit, the name and value of
+  the Kid mode setting, and where and how `hotkeygen` keeps the running
+  emulator's hotkeys (newer Batocera releases may move them to D-Bus, and
+  pause would then show as not known).
+- **Pause has no feedback.** The pause hotkey toggles and nothing reports
+  back: if the game is paused or resumed from the pad, `paused` is wrong until
+  the game ends. Play time keeps counting while paused.
 
 ## Development
 
@@ -399,6 +457,14 @@ is faked: they never connect anywhere.
 docker run --rm -v "$PWD":/src:ro python:3.14-slim sh -c '
   pip install -q pytest-homeassistant-custom-component asyncssh==2.24.0 &&
   cp -r /src /repo && cd /repo && python -m pytest -p no:cacheprovider'
+```
+
+The page's card, in [jsdom](https://github.com/jsdom/jsdom), also in a
+throwaway container:
+
+```sh
+docker run --rm -v "$PWD":/src:ro node:22-slim sh -c '
+  cp -r /src /repo && cd /repo/tests/card && npm install --silent && npm test'
 ```
 
 `custom_components/batocera/daemon/VERSION` must equal the `version` in
