@@ -118,6 +118,18 @@
     },
     "launch_failed": {
       "message": "{name} could not launch {game}: {reason}."
+    },
+    "pause_not_playing": {
+      "message": "{name} is not playing a game."
+    },
+    "pause_not_pausable": {
+      "message": "The game running on {name} cannot be paused."
+    },
+    "pause_timeout": {
+      "message": "{name} did not answer about pausing."
+    },
+    "pause_failed": {
+      "message": "{name} could not pause or resume the game: {reason}."
     }
   }
 }

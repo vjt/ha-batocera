@@ -27,6 +27,7 @@ from .entity import LiveEntity
 LAUNCH_TIMEOUT = 40
 # The daemon's refusals that have a message of their own.
 LAUNCH_ERRORS = ("busy", "es_unreachable", "locked", "timeout", "unknown_game")
+PAUSE_ERRORS = ("not_playing", "not_pausable", "timeout")
 
 STATES = {
     "playing": MediaPlayerState.PLAYING,
@@ -48,14 +49,21 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
 
     @property
     def supported_features(self) -> MediaPlayerEntityFeature:
-        return (
+        features = (
             MediaPlayerEntityFeature.STOP
             | MediaPlayerEntityFeature.BROWSE_MEDIA
             | MediaPlayerEntityFeature.PLAY_MEDIA
         )
+        # Pause unless the running emulator is known to have no pause
+        # hotkey: when the box cannot tell, trying is the only way to know.
+        if self.box.state == "playing" and self.box.pausable is not False:
+            features |= MediaPlayerEntityFeature.PAUSE | MediaPlayerEntityFeature.PLAY
+        return features
 
     @property
     def state(self) -> MediaPlayerState | None:
+        if self.box.state == "playing" and self.box.paused:
+            return MediaPlayerState.PAUSED
         return STATES.get(self.box.state or "")
 
     @property
@@ -71,8 +79,15 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        # Changes when the catalog does: the panel then reads it again.
-        return {"catalog": self.box.catalog_hash}
+        playing = self.box.state == "playing"
+        return {
+            # Changes when the catalog does: the panel then reads it again.
+            "catalog": self.box.catalog_hash,
+            # True or False when the box knows whether the game can pause.
+            "pausable": self.box.pausable if playing else None,
+            # Only while playing: it would change every minute otherwise.
+            "minutes_left": self.box.minutes_left() if playing else None,
+        }
 
     @property
     def source(self) -> str | None:
@@ -138,6 +153,26 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
                 translation_domain=DOMAIN,
                 translation_key=f"launch_{reason}",
                 translation_placeholders={**name, "game": game.name, "reason": err.reason},
+            ) from err
+
+    async def async_media_pause(self) -> None:
+        await self._async_pause(True)
+
+    async def async_media_play(self) -> None:
+        await self._async_pause(False)
+
+    async def _async_pause(self, paused: bool) -> None:
+        """The emulator's pause hotkey toggles: the box sends it only when
+        it believes the game is not already where it is asked to be."""
+        await self.box.async_check_control(self._context)
+        try:
+            await self.box.async_request("pause", paused=paused)
+        except BoxError as err:
+            reason = err.reason if err.reason in PAUSE_ERRORS else "failed"
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key=f"pause_{reason}",
+                translation_placeholders={"name": self.box.name, "reason": err.reason},
             ) from err
 
     async def async_media_stop(self) -> None:

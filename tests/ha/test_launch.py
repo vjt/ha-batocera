@@ -1,9 +1,12 @@
 """Launching games from Home Assistant: play_media on the media player."""
 
+from datetime import timedelta
+
 import pytest
 
 from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError, Unauthorized
+from homeassistant.util import dt as dt_util
 
 from conftest import MARIO, SONIC, publish_catalog
 from test_catalog import fire
@@ -85,3 +88,72 @@ async def test_launch_refused_by_the_box(hass, ready, daemon, error, key):
         await launch(hass, f"game:snes:{MARIO}")
     assert err.value.translation_key == key
     assert err.value.translation_placeholders["game"] == "Super Mario World"
+
+
+async def playing(hass, pausable):
+    for leaf, payload in (("game", "Super Mario World"), ("system", "snes"), ("game_id", MARIO),
+                          ("pausable", pausable), ("paused", "OFF"), ("state", "playing")):
+        fire(hass, leaf, payload)
+    await hass.async_block_till_done()
+    return hass.states.get("media_player.arcade")
+
+
+PAUSE = 1 | 16384  # PAUSE | PLAY
+
+
+async def test_pause_follows_the_emulator(hass, ready):
+    assert not hass.states.get("media_player.arcade").attributes["supported_features"] & PAUSE
+    player = await playing(hass, "ON")
+    assert player.attributes["supported_features"] & PAUSE == PAUSE
+    assert player.attributes["pausable"] is True
+    player = await playing(hass, "")  # not known: offered, the box will tell
+    assert player.attributes["supported_features"] & PAUSE == PAUSE
+    assert player.attributes["pausable"] is None
+    player = await playing(hass, "OFF")
+    assert not player.attributes["supported_features"] & PAUSE
+    assert player.attributes["pausable"] is False
+
+
+async def test_pause_and_resume(hass, ready, daemon, kid):
+    await playing(hass, "ON")
+    daemon.answers["pause"] = lambda req: {"ok": True, "paused": req["paused"]}
+    await hass.services.async_call(
+        "media_player", "media_pause", {"entity_id": "media_player.arcade"}, blocking=True
+    )
+    assert daemon.requests[-1]["op"] == "pause"
+    assert daemon.requests[-1]["paused"] is True
+    fire(hass, "paused", "ON")  # the box's belief, retained
+    await hass.async_block_till_done()
+    assert hass.states.get("media_player.arcade").state == "paused"
+    await hass.services.async_call(
+        "media_player", "media_play", {"entity_id": "media_player.arcade"}, blocking=True
+    )
+    assert daemon.requests[-1]["paused"] is False
+
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            "media_player", "media_play", {"entity_id": "media_player.arcade"},
+            blocking=True, context=Context(user_id=kid.id),
+        )
+    daemon.answers["pause"] = {"ok": False, "error": "not_pausable"}
+    with pytest.raises(HomeAssistantError) as err:
+        await hass.services.async_call(
+            "media_player", "media_pause", {"entity_id": "media_player.arcade"}, blocking=True
+        )
+    assert err.value.translation_key == "pause_not_pausable"
+
+
+async def test_minutes_left(hass, ready, freezer):
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": "number.arcade_daily_limit", "value": 40},
+        blocking=True,
+    )
+    assert hass.states.get("media_player.arcade").attributes["minutes_left"] is None  # idle
+    fire(hass, "started_at", (dt_util.now() - timedelta(minutes=30)).isoformat())
+    player = await playing(hass, "ON")
+    assert player.attributes["minutes_left"] == 10
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": "number.arcade_daily_limit", "value": 0},
+        blocking=True,
+    )
+    assert hass.states.get("media_player.arcade").attributes["minutes_left"] is None  # free play

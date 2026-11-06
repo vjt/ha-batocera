@@ -372,11 +372,21 @@ class Box:
                 closes += timedelta(days=1)
         return (closes - now).total_seconds() if inside else 0.0
 
+    def _limits_left(self, now: datetime) -> tuple[float | None, float | None]:
+        """Seconds left before the daily limit and before the window closes,
+        None for a limit that is not set."""
+        limit_left = self.daily_limit * 60 - self.playtime() if self.daily_limit else None
+        return limit_left, self._window_left(now)
+
+    def minutes_left(self) -> int | None:
+        """Minutes of play left now; None when no limit or window applies."""
+        left = [s for s in self._limits_left(dt_util.now()) if s is not None]
+        return max(0, math.ceil(min(left) / 60)) if left else None
+
     @callback
     def _evaluate(self) -> None:
         now = dt_util.now()
-        limit_left = self.daily_limit * 60 - self.playtime() if self.daily_limit else None
-        window_left = self._window_left(now)
+        limit_left, window_left = self._limits_left(now)
         if self.manual_lock:
             self.lock_reason = "manual"
         elif window_left == 0:
