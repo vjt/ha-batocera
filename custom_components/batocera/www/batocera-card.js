@@ -36,10 +36,28 @@ const STRINGS = {
   insertCoinNote: "PICK A GAME",
   paused: "PAUSED",
   browseOnly: "BROWSE ONLY",
+  back: "◀ BACK",
+  all: "ALL",
+  favourites: "★",
+  recent: "RECENT",
+  favouritesTitle: "★ FAVOURITES",
+  recentTitle: "RECENT",
+  search: "SEARCH",
+  loading: "LOADING…",
+  noCatalog: "NO CATALOG YET",
+  noCatalogNote: "THE BOX SENDS ITS GAMES ONCE EMULATIONSTATION IS UP",
+  noGames: "NO GAMES HERE",
+  noMatch: "NO MATCH",
+  nowPlaying: "NOW PLAYING",
+  noSignal: "NO SIGNAL",
 };
 
 // How long the kill button waits for its second tap.
 const SURE_MS = 4000;
+// Covers fetched at once: the box downscales them one by one.
+const COVERS_AT_ONCE = 4;
+// The folders of a system: all its games, its favourites, played last.
+const TABS = [["system", "all"], ["fav", "favourites"], ["recent", "recent"]];
 
 const el = (tag, cls, text) => {
   const node = document.createElement(tag);
@@ -57,6 +75,13 @@ const clock = (seconds) => {
 };
 // 1:05 for 65 minutes, for the time left.
 const hm = (minutes) => `${Math.floor(minutes / 60)}:${pad(minutes % 60)}`;
+// For search: lower case, without accents.
+const fold = (text) => (text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+// "system:snes", "fav:snes" -> ["system", "snes"]; "fav" -> ["fav", ""].
+const split = (id) => {
+  const at = id.indexOf(":");
+  return at < 0 ? [id, ""] : [id.slice(0, at), id.slice(at + 1)];
+};
 
 const STYLE = `
   :host { display: block; height: 100%; }
@@ -72,6 +97,21 @@ const STYLE = `
   button:disabled { cursor: default; opacity: 0.5; }
   .banner { text-align: center; padding: 16px; }
   .banner:empty, .hidden { display: none !important; }
+  .browse { padding: 0 16px 24px; }
+  .nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+  .where { flex: 1 1 auto; min-width: 0; }
+  .tabs { display: flex; gap: 8px; }
+  .tabs button[aria-pressed="true"] { outline: 2px solid currentColor; }
+  .search { min-height: 44px; box-sizing: border-box; width: 100%; font: inherit; margin: 4px 0 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 12px; }
+  .tile { display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 8px;
+          content-visibility: auto; contain-intrinsic-size: 132px 200px; }
+  .art { aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .art img { width: 100%; height: 100%; object-fit: contain; }
+  .art:not(.loaded) img { display: none; }
+  .tn { overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+        -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .dir .art { aspect-ratio: auto; min-height: 64px; }
 `;
 
 class BatoceraCard extends HTMLElement {
@@ -91,6 +131,9 @@ class BatoceraCard extends HTMLElement {
     clearInterval(this._ticker);
     this._ticker = undefined;
     clearTimeout(this._sureTimer);
+    if (this._observer) this._observer.disconnect();
+    this._observer = undefined;
+    this._queue = [];
   }
 
   set hass(hass) {
@@ -155,17 +198,239 @@ class BatoceraCard extends HTMLElement {
           </div>
         </header>
         <div class="banner"><div class="big"></div><div class="note"></div></div>
+        <section class="browse">
+          <div class="nav">
+            <button class="back" type="button">${STRINGS.back}</button>
+            <div class="where"></div>
+            <div class="tabs">${TABS.map(([kind, label]) =>
+              `<button type="button" data-kind="${kind}">${STRINGS[label]}</button>`).join("")}</div>
+          </div>
+          <input class="search" type="search" placeholder="${STRINGS.search}" aria-label="${STRINGS.search}">
+          <div class="status"><div class="big"></div><div class="note"></div></div>
+          <div class="grid"></div>
+        </section>
       </div>`;
     const $ = (sel) => root.querySelector(sel);
     this.$ = {
       wrap: $(".wrap"), cover: $(".cover"), img: $(".cover img"), title: $(".title"), sub: $(".sub"),
       clock: $(".clock"), label: $(".clock .label"), left: $(".clock .left"), ctl: $(".ctl"),
       pause: $(".pause"), kill: $(".kill"), banner: $(".banner"), big: $(".banner .big"),
-      note: $(".banner .note"),
+      note: $(".banner .note"), back: $(".back"), where: $(".where"), tabs: $(".tabs"),
+      search: $(".search"), status: $(".status"), statusBig: $(".status .big"),
+      statusNote: $(".status .note"), grid: $(".grid"),
     };
     this.$.pause.addEventListener("click", () => this._pause());
     this.$.kill.addEventListener("click", () => this._kill());
+    this.$.back.addEventListener("click", () => this._back());
+    this.$.tabs.addEventListener("click", (e) => {
+      const tab = e.target.closest("button");
+      if (tab) this._tab(tab.dataset.kind);
+    });
+    this.$.search.addEventListener("input", () => this._renderGrid());
+    this.$.grid.addEventListener("click", (e) => {
+      const tile = e.target.closest(".tile");
+      if (!tile) return;
+      const item = this._items[Number(tile.dataset.index)];
+      if (item && item.can_expand) this._open(item.media_content_id, item.title);
+      else if (item && item.can_play) this._pick(item);
+    });
+    this._stack = [{ id: "", title: "" }];
+    this._systems = {};  // system name -> its full name, from the root
+    this._blobs = new Map();  // cover URL without its token -> blob URL
+    this._queue = [];
+    this._fetching = 0;
     this._built = true;
+  }
+
+  // --- browsing ---------------------------------------------------------
+
+  _here() {
+    return this._stack[this._stack.length - 1];
+  }
+
+  _open(id, title) {
+    this._stack.push({ id, title });
+    this.$.search.value = "";
+    this._browse();
+  }
+
+  _back() {
+    if (this._stack.length > 1) this._stack.pop();
+    this.$.search.value = "";
+    this._browse();
+  }
+
+  // Within a system: all its games, its favourites, or those played last.
+  _tab(kind) {
+    const [, system] = split(this._here().id);
+    if (!system) return;
+    this._here().id = `${kind}:${system}`;
+    this._browse();
+  }
+
+  _browse() {
+    const here = this._here();
+    const seq = (this._seq = (this._seq || 0) + 1);
+    this._folder = undefined;
+    this._failed = false;
+    this._renderGrid();
+    Promise.resolve(this._hass.callWS({
+      type: "media_player/browse_media", entity_id: this._config.entities.player,
+      media_content_id: here.id, media_content_type: "directory",
+    }))
+      .then((folder) => {
+        if (seq !== this._seq) return;
+        this._folder = folder;
+        if (!here.id) {
+          for (const child of folder.children || []) {
+            const [kind, system] = split(child.media_content_id);
+            if (kind === "system") this._systems[system] = child.title;
+          }
+        }
+      })
+      .catch(() => {
+        if (seq !== this._seq) return;
+        // A system that is gone: back to the top.
+        if (this._stack.length > 1) {
+          this._stack = [this._stack[0]];
+          this._browse();
+          return;
+        }
+        this._failed = true;
+      })
+      .finally(() => {
+        if (seq === this._seq) this._renderGrid();
+      });
+  }
+
+  _pick() {}
+
+  _tile(item, index, playingId) {
+    const tile = el("button", item.can_expand ? "tile dir" : "tile game");
+    tile.type = "button";
+    tile.dataset.index = String(index);
+    const art = el("div", "art");
+    if (item.can_expand) {
+      const [kind] = split(item.media_content_id);
+      tile.classList.add(kind);
+      art.textContent = { fav: "★", recent: "⟲" }[kind] || "";
+      tile.append(art, el("span", "tn", item.title));
+      return tile;
+    }
+    tile.dataset.id = item.media_content_id;
+    art.append(el("span", "nosignal", STRINGS.noSignal));
+    if (item.thumbnail) {
+      const img = el("img");
+      img.alt = "";
+      art.append(img);
+      this._cover(art, img, item.thumbnail);
+    } else {
+      art.classList.add("none");
+    }
+    tile.append(art, el("span", "tn", item.title));
+    if (item.media_content_id === playingId) {
+      tile.classList.add("now");
+      tile.append(el("span", "badge", STRINGS.nowPlaying));
+    }
+    return tile;
+  }
+
+  // Covers come through Home Assistant's image proxy, with the user's token:
+  // a few at a time, once each, and only for tiles in sight when the
+  // browser can tell.
+  _cover(art, img, url) {
+    const key = url.split("?")[0];
+    const known = this._blobs.get(key);
+    if (known) {
+      img.src = known;
+      art.classList.add("loaded");
+      return;
+    }
+    const job = { art, img, url, key };
+    if (typeof IntersectionObserver === "undefined") {
+      this._queue.push(job);  // fetched once the tile is on the page
+      return;
+    }
+    if (!this._observer) {
+      this._observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          this._observer.unobserve(entry.target);
+          this._queue.push(entry.target._job);
+        }
+        this._pump();
+      }, { rootMargin: "300px" });
+    }
+    art._job = job;
+    this._observer.observe(art);
+  }
+
+  _pump() {
+    while (this._fetching < COVERS_AT_ONCE && this._queue.length) {
+      const job = this._queue.shift();
+      if (!job.art.isConnected) continue;  // its tile is gone
+      const known = this._blobs.get(job.key);
+      if (known) {
+        job.img.src = known;
+        job.art.classList.add("loaded");
+        continue;
+      }
+      if (!this._hass.fetchWithAuth) {  // the token in the URL will do
+        job.img.src = job.url;
+        job.art.classList.add("loaded");
+        continue;
+      }
+      this._fetching++;
+      Promise.resolve(this._hass.fetchWithAuth(job.url))
+        .then((response) => (response && response.ok ? response.blob() : null))
+        .then((blob) => {
+          if (!blob) throw new Error("no cover");
+          const src = URL.createObjectURL(blob);
+          this._blobs.set(job.key, src);
+          job.img.src = src;
+          job.art.classList.add("loaded");
+        })
+        .catch(() => job.art.classList.add("none"))
+        .finally(() => {
+          this._fetching--;
+          this._pump();
+        });
+    }
+  }
+
+  _renderGrid() {
+    const here = this._here();
+    const [kind, system] = split(here.id);
+    const root = !here.id;
+    this.$.back.classList.toggle("hidden", root);
+    const title = root ? this._config.name || "" : this._folder ? this._folder.title : here.title;
+    this.$.where.textContent = title;
+    this.$.tabs.classList.toggle("hidden", !system);
+    for (const tab of this.$.tabs.children) tab.setAttribute("aria-pressed", String(tab.dataset.kind === kind));
+
+    let items = (this._folder && this._folder.children) || [];
+    const query = fold(this.$.search.value.trim());
+    const shown = query ? items.filter((item) => fold(item.title).includes(query)) : items;
+    let big = "";
+    let note = "";
+    if (this._failed) [big, note] = [STRINGS.noCatalog, STRINGS.noCatalogNote];
+    else if (!this._folder) big = STRINGS.loading;
+    else if (root && !items.some((i) => split(i.media_content_id)[0] === "system")) {
+      [big, note] = [STRINGS.noCatalog, STRINGS.noCatalogNote];
+      items = [];
+    } else if (!items.length) big = STRINGS.noGames;
+    else if (!shown.length) big = STRINGS.noMatch;
+    this.$.statusBig.textContent = big;
+    this.$.statusNote.textContent = note;
+    this.$.status.classList.toggle("hidden", !big);
+
+    const playing = this._player().attr.media_content_id;
+    this._items = items.length ? shown : [];
+    // The tiles are made anew: forget the old ones' covers still waiting.
+    if (this._observer) this._observer.disconnect();
+    this.$.grid.replaceChildren(...this._items.map((item, i) => this._tile(item, i, playing)));
+    this._queue = this._queue.filter((job) => job.art.isConnected);
+    this._pump();
   }
 
   _pause() {
@@ -195,6 +460,16 @@ class BatoceraCard extends HTMLElement {
     const { state, attr } = this._player();
     const playing = state === "playing" || state === "paused";
     const online = playing || state === "idle";
+    // Read the folder again when the catalog changes or the box comes back,
+    // and mark the game that runs now.
+    const seen = `${attr.catalog || ""}|${online}`;
+    if (seen !== this._seen) {
+      this._seen = seen;
+      this._browse();
+    } else if ((attr.media_content_id || "") !== (this._playingId || "")) {
+      this._renderGrid();
+    }
+    this._playingId = attr.media_content_id;
     const lock = this._state("locked");
     const locked = !!lock && lock.state === "on";
 

@@ -36,16 +36,51 @@ const playingStates = (attrs = {}, over = {}) => idleStates({
   ...over,
 });
 
+// The media browser as Home Assistant answers it for this box.
+const thumb = (id) => `/api/media_player_proxy/media_player.arcade/browse_media/game/${id}?token=t1`;
+const game = (system, id, title, cover = true) => ({
+  media_class: "game", media_content_id: `game:${system}:${id}`, media_content_type: "game",
+  title, can_play: true, can_expand: false, thumbnail: cover ? thumb(`game:${system}:${id}`) : null,
+});
+const folder = (id, title, children) => ({
+  media_class: "directory", media_content_id: id, media_content_type: "directory", title,
+  can_play: false, can_expand: true, children, thumbnail: null,
+});
+const SONIC = game("megadrive", "9b1c4e0d2a37", "Sonic the Hedgehog");
+const SOR = game("megadrive", "0d5e7a9b3c21", "Streets of Rage");
+const BARE = game("megadrive", "1a2b3c4d5e6f", "Bare", false);
+const POKEMON = game("megadrive", "2b3c4d5e6f70", "Pokémon Crystal");
+const MARIO = game("snes", "5f4e3d2c1b0a", "Super Mario World");
+const FOLDERS = {
+  "": folder("", "Arcade", [
+    folder("fav", "Favourites"), folder("recent", "Recently played"),
+    folder("system:megadrive", "Sega Mega Drive"), folder("system:snes", "Super Nintendo"),
+  ]),
+  "system:megadrive": folder("system:megadrive", "Sega Mega Drive", [BARE, POKEMON, SONIC, SOR]),
+  "fav:megadrive": folder("fav:megadrive", "Favourites · Sega Mega Drive", [SONIC]),
+  "recent:megadrive": folder("recent:megadrive", "Recently played · Sega Mega Drive", [SOR, SONIC]),
+  "system:snes": folder("system:snes", "Super Nintendo", [MARIO]),
+  fav: folder("fav", "Favourites", [SONIC]),
+  recent: folder("recent", "Recently played", [MARIO, SOR, SONIC]),
+};
+const browseMedia = (folders = FOLDERS) => (msg) =>
+  folders[msg.media_content_id] ? Promise.resolve(structuredClone(folders[msg.media_content_id]))
+    : Promise.reject(new Error("not found"));
+
 const windows = [];
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-async function mount(states = idleStates(), { control = true, ws = {} } = {}) {
+async function mount(states = idleStates(), { control = true, ws = {}, folders = FOLDERS, fetch } = {}) {
   const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only", url: "https://ha.example/batocera" });
   const { window } = dom;
   windows.push(window);
   window.eval(source);
+  let blobs = 0;
+  window.URL.createObjectURL = () => `blob:cover-${++blobs}`;
   const calls = [];
   const wsCalls = [];
+  const fetched = [];
+  ws = { "media_player/browse_media": browseMedia(folders), ...ws };
   const card = window.document.createElement("batocera-card");
   card.setConfig({ name: "Arcade", entry_id: "e1", entities: ENTITIES });
   window.document.body.appendChild(card);
@@ -59,6 +94,10 @@ async function mount(states = idleStates(), { control = true, ws = {} } = {}) {
       const answer = ws[msg.type];
       return answer ? answer(msg) : Promise.reject(new Error("unknown command"));
     },
+    fetchWithAuth: (url) => {
+      fetched.push(url);
+      return fetch ? fetch(url) : Promise.resolve({ ok: !url.includes("1a2b3c"), blob: () => Promise.resolve({}) });
+    },
   });
   card.hass = hass();
   await flush();
@@ -71,7 +110,19 @@ async function mount(states = idleStates(), { control = true, ws = {} } = {}) {
   const asked = (type) => JSON.parse(JSON.stringify(wsCalls.filter((m) => m.type === type)));
   const text = (q) => ($(q) ? $(q).textContent : undefined);
   const shown = (q) => !!$(q) && !$(q).classList.contains("hidden");
-  return { window, card, root, $, $$, calls, wsCalls, sent, asked, set, text, shown };
+  const tiles = () => $$(".grid .tile .tn").map((n) => n.textContent);
+  const open = async (title) => {
+    const tile = $$(".grid .tile").find((t) => t.querySelector(".tn").textContent === title);
+    assert.ok(tile, `no tile ${title} in ${tiles()}`);
+    tile.click();
+    await flush();
+  };
+  const type = async (text) => {
+    $(".search").value = text;
+    $(".search").dispatchEvent(new window.Event("input"));
+    await flush();
+  };
+  return { window, card, root, $, $$, calls, wsCalls, fetched, sent, asked, set, text, shown, tiles, open, type };
 }
 
 // --- the now-playing bar ------------------------------------------------
@@ -153,6 +204,120 @@ test("pause: as far as the box knows", async () => {
   assert.match(t.text(".sub"), /PAUSED/);
   t.$(".pause").click();
   assert.deepEqual(t.sent().at(-1), ["media_player", "media_play", { entity_id: "media_player.arcade" }]);
+});
+
+// --- browsing ---------------------------------------------------------
+
+test("the top: favourites, recent, then the systems", async () => {
+  const t = await mount();
+  assert.equal(t.text(".where"), "Arcade");
+  assert.ok(!t.shown(".back"));
+  assert.ok(!t.shown(".tabs"));
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
+  assert.ok(t.$(".grid .tile.fav") && t.$(".grid .tile.recent"));
+});
+
+test("a system: its games, its tabs, back to the top", async () => {
+  const t = await mount();
+  await t.open("Sega Mega Drive");
+  assert.deepEqual(t.asked("media_player/browse_media").at(-1), {
+    type: "media_player/browse_media", entity_id: "media_player.arcade",
+    media_content_id: "system:megadrive", media_content_type: "directory",
+  });
+  assert.equal(t.text(".where"), "Sega Mega Drive");
+  assert.deepEqual(t.tiles(), ["Bare", "Pokémon Crystal", "Sonic the Hedgehog", "Streets of Rage"]);
+  assert.ok(t.shown(".tabs") && t.shown(".back"));
+  assert.equal(t.$('.tabs [data-kind="system"]').getAttribute("aria-pressed"), "true");
+  t.$('.tabs [data-kind="fav"]').click();
+  await flush();
+  assert.deepEqual(t.tiles(), ["Sonic the Hedgehog"]);
+  t.$('.tabs [data-kind="recent"]').click();
+  await flush();
+  assert.deepEqual(t.tiles(), ["Streets of Rage", "Sonic the Hedgehog"]);
+  t.$(".back").click();
+  await flush();
+  assert.equal(t.tiles().length, 4);
+  assert.equal(t.text(".where"), "Arcade");
+});
+
+test("search, without minding case or accents", async () => {
+  const t = await mount();
+  await t.open("Sega Mega Drive");
+  await t.type("POKEMON");
+  assert.deepEqual(t.tiles(), ["Pokémon Crystal"]);
+  await t.type("zelda");
+  assert.deepEqual(t.tiles(), []);
+  assert.equal(t.text(".status .big"), "NO MATCH");
+  t.$(".back").click();
+  await flush();
+  assert.equal(t.$(".search").value, "");
+});
+
+test("the running game stands out", async () => {
+  const t = await mount(playingStates());
+  await t.open("Sega Mega Drive");
+  const now = t.$$(".grid .tile.now");
+  assert.equal(now.length, 1);
+  assert.equal(now[0].querySelector(".tn").textContent, "Sonic the Hedgehog");
+  assert.equal(now[0].querySelector(".badge").textContent, "NOW PLAYING");
+  await t.set(idleStates());
+  assert.equal(t.$$(".grid .tile.now").length, 0);
+});
+
+test("covers through the proxy, with the user's auth, once each", async () => {
+  const t = await mount();
+  await t.open("Sega Mega Drive");
+  await flush();
+  assert.deepEqual(t.fetched, [thumb(POKEMON.media_content_id), thumb(SONIC.media_content_id), thumb(SOR.media_content_id)]);
+  const art = (title) => t.$$(".grid .tile").find((x) => x.querySelector(".tn").textContent === title).querySelector(".art");
+  assert.ok(art("Sonic the Hedgehog").classList.contains("loaded"));
+  assert.match(art("Sonic the Hedgehog").querySelector("img").src, /^blob:cover-/);
+  assert.ok(art("Bare").classList.contains("none"));  // no cover on the box
+  assert.equal(art("Bare").textContent, "NO SIGNAL");
+  // In another folder: from memory, even with a new token in the URL.
+  t.$('.tabs [data-kind="fav"]').click();
+  await flush();
+  await flush();
+  assert.equal(t.fetched.length, 3);
+  assert.ok(art("Sonic the Hedgehog").classList.contains("loaded"));
+});
+
+test("covers: a few at a time", async () => {
+  const pending = [];
+  const many = Array.from({ length: 10 }, (_, i) => game("snes", `00000000000${i}`, `Game ${i}`));
+  const folders = { ...FOLDERS, "system:snes": folder("system:snes", "Super Nintendo", many) };
+  const t = await mount(idleStates(), {
+    folders, fetch: () => new Promise((resolve) => pending.push(resolve)),
+  });
+  await t.open("Super Nintendo");
+  assert.equal(t.fetched.length, 4);
+  pending.shift()({ ok: true, blob: () => Promise.resolve({}) });
+  await flush();
+  await flush();
+  assert.equal(t.fetched.length, 5);
+});
+
+test("no catalog yet, or the box answers nothing", async () => {
+  const empty = { "": folder("", "Arcade", [folder("fav", "Favourites"), folder("recent", "Recently played")]) };
+  const t = await mount(idleStates(), { folders: empty });
+  assert.equal(t.text(".status .big"), "NO CATALOG YET");
+  assert.deepEqual(t.tiles(), []);
+  const u = await mount(idleStates(), { folders: {} });
+  assert.equal(u.text(".status .big"), "NO CATALOG YET");
+});
+
+test("a new catalog is read again; a system gone leads back to the top", async () => {
+  const folders = { ...FOLDERS };
+  const t = await mount(idleStates(), { folders });
+  await t.open("Super Nintendo");
+  const asked = t.asked("media_player/browse_media").length;
+  await t.set(idleStates());  // same catalog: nothing read
+  assert.equal(t.asked("media_player/browse_media").length, asked);
+  folders["system:snes"] = undefined;
+  await t.set(idleStates({ "media_player.arcade": s("idle", { catalog: "c2" }) }));
+  await flush();
+  assert.equal(t.text(".where"), "Arcade");
+  assert.equal(t.tiles().length, 4);
 });
 
 for (const [name, fn] of tests) {
