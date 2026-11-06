@@ -72,6 +72,12 @@ class VersionTest(unittest.TestCase):
         manifest = json.loads((DAEMON.parent / "manifest.json").read_text())
         self.assertEqual((DAEMON / "VERSION").read_text().strip(), manifest["version"])
 
+    def test_get_script_fetches_this_version(self):
+        tag = "v" + (DAEMON / "VERSION").read_text().strip()
+        repo = DAEMON.parents[2]
+        self.assertIn(f"\nTAG={tag}\n", (repo / "get.sh").read_text())
+        self.assertIn(f"/ha-batocera/{tag}/get.sh", (repo / "README.md").read_text())
+
 
 class ConfTest(TempDirTest):
     def test_read_conf(self):

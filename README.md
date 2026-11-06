@@ -113,10 +113,19 @@ Reconfigure is also the way out for a box whose daemon does not run (it never
 comes online, so it is never updated), and it hands a box set up by hand over
 to Home Assistant.
 
-### The daemon on the box, by hand
+### The daemon on the box, without Home Assistant
 
-Copy the `custom_components/batocera/daemon/` folder to the box and run the
-installer there as root, for example:
+If you would rather not give Home Assistant root on the box, install the
+daemon yourself, as root on the box. Either with
+[`get.sh`](get.sh), which downloads this release's source archive from GitHub,
+over HTTPS only, and runs the installer from it:
+
+```sh
+curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.2.0/get.sh && sh /tmp/ha-batocera-get.sh
+```
+
+or by copying the `custom_components/batocera/daemon/` folder to the box and
+running the installer there, for example:
 
 ```sh
 scp -r custom_components/batocera/daemon root@batocera.local:/tmp/ha-batocera
@@ -126,7 +135,7 @@ ssh root@batocera.local /tmp/ha-batocera/install.sh
 Then, in Home Assistant: Settings, Devices & services, Add integration,
 "Batocera", "The box already runs ha-batocera". Give the box a name and its
 topic prefix, `batocera/<device>`. Home Assistant does not update a box set up
-this way.
+this way: run either command again to upgrade it.
 
 ### The installer
 
@@ -324,8 +333,10 @@ docker run --rm -v "$PWD":/src:ro python:3.14-slim sh -c '
 ```
 
 `custom_components/batocera/daemon/VERSION` must equal the `version` in
-`manifest.json` (a daemon test checks it): Home Assistant reinstalls the daemon
-on boxes that report another version, so bump both for every release.
+`manifest.json`, and `get.sh` and this README must fetch the matching `v` tag
+(a daemon test checks all three): Home Assistant reinstalls the daemon on
+boxes that report another version, so bump them together for every release,
+and tag it.
 
 ## License
 
