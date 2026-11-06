@@ -383,6 +383,7 @@ class Daemon:
         self.stopping = False
         self.timers = {}      # name -> (when, function)
         self.catalog = {}     # system name -> SystemCatalog, as last read
+        self.catalog_read = False  # whether all of it was read once
         self.roms = {}        # game id -> Rom, from the catalog
         self.published = {}   # system name -> hash, as on the broker
         self.index_sent = None  # the catalog/index payload on the broker
@@ -624,6 +625,8 @@ class Daemon:
         settings = self.settings()
         self.publish_public_web(settings)
         kid_mode = settings.get("UIMode") == "Kid"
+        if not self.catalog_read:
+            only = None  # one system alone would make an index of one
         try:
             systems = self.es.systems()
         except EsError as err:
@@ -650,6 +653,7 @@ class Daemon:
         log.info("catalog: %d games in %d systems", len(self.roms), len(catalog))
         self.publish_catalog()
         if only is None:
+            self.catalog_read = True
             self.at("catalog", CATALOG_EVERY, self.scheduled_catalog)
         return True
 
@@ -776,7 +780,7 @@ class Daemon:
         elif leaf == "req":
             self.on_request(payload)
         elif leaf == "catalog/index":
-            if self.index_sent is None:  # left by an earlier run: start from it
+            if self.index_sent is None and payload:  # left by an earlier run
                 try:
                     self.published = {e["name"]: e["hash"] for e in json.loads(payload)}
                 except (ValueError, TypeError, KeyError) as err:

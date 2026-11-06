@@ -484,6 +484,17 @@ class CatalogDaemonTest(unittest.TestCase):
         self.assertEqual(self.fake.requests, [])
         self.assertEqual(self.d.timers["catalog"][0], self.clock.t + hb.CATALOG_EVERY)
 
+    def test_cleared_retained_index_is_no_news(self):
+        self.d.on_mqtt("batocera/test/catalog/index ")  # no warning
+        self.assertIsNone(self.d.index_sent)
+
+    def test_one_system_before_the_whole_catalog_reads_it_all(self):
+        # EmulationStation was not up at start, a game ends: everything.
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.refresh_catalog(only="snes")
+        self.assertEqual(list(self.d.catalog), ["megadrive", "snes"])
+        self.assertIn("catalog", self.d.timers)
+
     def test_after_a_game_its_system_is_read_again(self):
         self.refresh()
         self.d.game = {"name": "Super Mario World", "system": "snes", "emulator": "libretro",
