@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
-from homeassistant.components import mqtt
-from homeassistant.config_entries import ConfigEntry
+import voluptuous as vol
+
+from homeassistant.components import mqtt, websocket_api
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import config_validation as cv, issue_registry as ir
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import ConfigType
 
 from . import installer
 from .box import Box
@@ -31,6 +35,29 @@ PLATFORMS = [
 _LOGGER = logging.getLogger(__name__)
 
 type BatoceraConfigEntry = ConfigEntry[Box]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    websocket_api.async_register_command(hass, ws_access)
+    return True
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "batocera/access", vol.Required("entry_id"): str}
+)
+@callback
+def ws_access(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Whether the user may launch, pause and stop games on a box: the panel
+    shows its controls only then. The services check again."""
+    entry = hass.config_entries.async_get_entry(msg["entry_id"])
+    if entry is None or entry.domain != DOMAIN or entry.state is not ConfigEntryState.LOADED:
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "No such Batocera box")
+        return
+    connection.send_result(msg["id"], {"control": entry.runtime_data.may_control(connection.user)})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> bool:

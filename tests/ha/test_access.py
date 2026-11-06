@@ -69,3 +69,20 @@ async def test_options_flow_lists_non_admin_users(
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert setup.options == {"control_users": [kid.id]}
+
+
+async def access(client, entry_id):
+    await client.send_json_auto_id({"type": "batocera/access", "entry_id": entry_id})
+    return await client.receive_json()
+
+
+async def test_access_command(hass, mqtt_mock, setup, kid, hass_ws_client):
+    admin = await hass_ws_client(hass)
+    assert (await access(admin, setup.entry_id))["result"] == {"control": True}
+    assert (await access(admin, "nope"))["error"]["code"] == "not_found"
+
+    refresh = await hass.auth.async_create_refresh_token(kid, "https://example.com/app")
+    client = await hass_ws_client(hass, hass.auth.async_create_access_token(refresh))
+    assert (await access(client, setup.entry_id))["result"] == {"control": False}
+    hass.config_entries.async_update_entry(setup, options={"control_users": [kid.id]})
+    assert (await access(client, setup.entry_id))["result"] == {"control": True}
