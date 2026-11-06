@@ -408,6 +408,24 @@ test("the sheet closes on cancel, outside, or escape", async () => {
   assert.ok(!t.shown(".sheet"));
 });
 
+// --- the look --------------------------------------------------------------
+
+test("the pixel font is declared once on the page", async () => {
+  const t = await mount();
+  const other = t.window.document.createElement("batocera-card");
+  other.setConfig({ name: "Attic", entities: ENTITIES });
+  t.window.document.body.appendChild(other);
+  other.hass = { states: idleStates(), callService: () => Promise.resolve(), callWS: () => new Promise(() => {}) };
+  const faces = t.window.document.head.querySelectorAll("#batocera-pixel-font");
+  assert.equal(faces.length, 1);
+  assert.match(faces[0].textContent, /url\("\/batocera\/fonts\/PressStart2P-Regular\.ttf"\)/);
+});
+
+test("motion stops for those who asked", async () => {
+  const t = await mount();
+  assert.match(t.$("style").textContent, /prefers-reduced-motion: reduce/);
+});
+
 for (const [name, fn] of tests) {
   try {
     await fn();
