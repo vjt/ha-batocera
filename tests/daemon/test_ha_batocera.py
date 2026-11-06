@@ -172,12 +172,12 @@ class DaemonTest(TempDirTest):
             self.clock.t += 125.4
             self.d.on_line(f"gameStop\t{self.pid}\tmegadrive\tlibretro\tgenesisplusgx\t{self.rom}")
         published = self.run.published()
-        self.assertEqual(published[0], ("batocera/test/state", "idle"))
-        self.assertEqual([t for t, p in published[1:6] if p is None],
+        self.assertEqual(published[0][0], "batocera/test/last_session")
+        self.assertEqual(published[1], ("batocera/test/state", "idle"))
+        self.assertEqual([t for t, p in published[2:] if p is None],
                          ["batocera/test/game", "batocera/test/system", "batocera/test/emulator",
                           "batocera/test/started_at", "batocera/test/cover"])
-        self.assertEqual(published[6][0], "batocera/test/last_session")
-        self.assertEqual(json.loads(published[6][1]), {
+        self.assertEqual(json.loads(published[0][1]), {
             "game": "Bare", "system": "megadrive", "emulator": "libretro/genesisplusgx",
             "started_at": "2023-11-14T22:13:20+00:00", "ended_at": "2023-11-14T22:15:25+00:00",
             "seconds": 125})

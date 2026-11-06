@@ -215,7 +215,8 @@ class Daemon:
         g, self.game = self.game, None
         ended = self.now()
         log.info("ended %s after %ds", g["name"], ended - g["started"])
-        self.publish_game()
+        # Before "idle": Home Assistant counts the session from this, and
+        # stops counting the running one when it sees the same started_at.
         self.pub("last_session", json.dumps({
             "game": g["name"],
             "system": g["system"],
@@ -224,6 +225,7 @@ class Daemon:
             "ended_at": iso(ended),
             "seconds": round(ended - g["started"]),
         }))
+        self.publish_game()
 
     def launcher_alive(self):
         st = self.game["starttime"]
