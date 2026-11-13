@@ -296,6 +296,7 @@ class BatoceraCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    if (this._built) this._unzoom();  // no stream left open off the page
     clearInterval(this._ticker);
     this._ticker = undefined;
     clearTimeout(this._sureTimer);
@@ -424,6 +425,13 @@ class BatoceraCard extends HTMLElement {
       this._zoomed = true;
       this._renderZoom();
       this.$.zoom.focus();
+      this._watchLive();
+    });
+    // The live stream broke (box gone, Home Assistant restarted): the preview.
+    this.$.zoomImg.addEventListener("error", () => {
+      if (!this._live) return;
+      this._live = undefined;
+      this._renderZoom();
     });
     this.$.zoom.addEventListener("click", () => this._unzoom());
     this.$.zoom.addEventListener("keydown", (e) => {
@@ -788,10 +796,11 @@ class BatoceraCard extends HTMLElement {
   }
 
   // The screenshot, as big as the page allows: until a tap, Escape, or the
-  // screenshot goes away.
+  // screenshot goes away. Live while open, when the stream can be had.
   _renderZoom() {
-    const src = this.$.shotImg.getAttribute("src");
-    const open = !!this._zoomed && !!src;
+    const shot = this.$.shotImg.getAttribute("src");
+    const open = !!this._zoomed && !!shot;
+    const src = this._live || shot;
     if (open && this.$.zoomImg.getAttribute("src") !== src) this.$.zoomImg.setAttribute("src", src);
     if (!open) this.$.zoomImg.removeAttribute("src");
     this.$.zoom.classList.toggle("hidden", !open);
@@ -799,7 +808,30 @@ class BatoceraCard extends HTMLElement {
 
   _unzoom() {
     this._zoomed = false;
+    this._dropLive();
     this._renderZoom();
+  }
+
+  // The live screen: an MJPEG stream an <img> plays by itself. Its path is
+  // signed (an <img> sends no auth header) each time the zoom opens; while it
+  // is open Home Assistant keeps the box sending frames, and dropping the src
+  // closes it, which stops them.
+  _watchLive() {
+    const id = this._config.entry_id;
+    if (!id || !this._hass || !this._hass.callWS) return;
+    const ask = (this._liveAsk = (this._liveAsk || 0) + 1);
+    Promise.resolve(this._hass.callWS({ type: "auth/sign_path", path: `/api/batocera/${id}/live`, expires: 60 }))
+      .then((signed) => {
+        if (ask !== this._liveAsk || !this._zoomed || !signed || !signed.path) return;
+        this._live = signed.path;
+        this._renderZoom();
+      })
+      .catch(() => {});  // not signed: the preview, as before
+  }
+
+  _dropLive() {
+    this._live = undefined;
+    this._liveAsk = (this._liveAsk || 0) + 1;  // an answer on its way is late
   }
 
   _pause() {
@@ -876,7 +908,7 @@ class BatoceraCard extends HTMLElement {
     if (shot && this.$.shotImg.getAttribute("src") !== shot) this.$.shotImg.setAttribute("src", shot);
     if (!shot) this.$.shotImg.removeAttribute("src");
     this.$.shot.classList.toggle("hidden", !shot);
-    if (!shot) this._zoomed = false;
+    if (!shot) { this._zoomed = false; this._dropLive(); }
     this._renderZoom();
 
     const left = attr.minutes_left;

@@ -65,6 +65,9 @@ LAUNCH_START_WAIT = 30  # seconds for a launched game to start
 PAUSABLE_AFTER = 5      # seconds after a start: the launcher sets the hotkeys after the hook
 SCREEN_EVERY = 15       # seconds between screenshots; 0 in the settings turns them off
 SCREEN_WIDTH = 640      # screenshot width, pixels
+LIVE_EVERY = 1          # seconds between frames while someone watches the live screen
+LIVE_WIDTH = 1280       # live frame width, pixels
+LIVE_LEASE = 60         # seconds of live screen a "watch live" buys; Home Assistant renews it
 # Where Batocera's Wayland compositor listens, for grim. The service does not
 # inherit the session's environment, so these are the defaults.
 WAYLAND = {"WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": "/var/run"}
@@ -524,6 +527,8 @@ class Daemon:
         self.screen_every = screen_every
         self.screen_sent = None  # hash of the screenshot on the broker
         self.screen_error = None  # the last screenshot failure, logged once
+        self.live_until = 0.0  # live frames until then: someone watches
+        self.live_sent = None  # hash of the last live frame sent
         self.game = None      # the session being played, or None
         self.locked = False   # retained by Home Assistant on <base>/lock
         self.stopping = False
@@ -657,6 +662,40 @@ class Daemon:
         if digest != self.screen_sent:
             self.pub("screen", jpeg)
             self.screen_sent = digest
+
+    def watch(self, payload):
+        """Home Assistant says someone watches the live screen ("live", again
+        every so often) or nobody does any more ("off")."""
+        if payload == "off":
+            self.live_until = 0.0
+            self.timers.pop("live", None)
+            return
+        if payload != "live":
+            log.warning("unknown watch %r", payload)
+            return
+        if self.screen_every <= 0:  # screenshots are off in the settings
+            return
+        watched = self.now() < self.live_until
+        self.live_until = self.now() + LIVE_LEASE
+        if not watched:
+            self.live_sent = None  # a new viewer gets the first frame
+            self.at("live", 0, self.live)
+
+    def live(self):
+        """While watched, a big frame every LIVE_EVERY s when the screen
+        changed. Not retained: it is for whoever watches now. Failures are
+        screen()'s to report."""
+        if self.now() >= self.live_until:
+            return
+        self.at("live", LIVE_EVERY, self.live)
+        try:
+            jpeg = grab_screen(self.run, self.env, LIVE_WIDTH)
+        except ScreenError:
+            return
+        digest = hashlib.sha256(jpeg).digest()
+        if digest != self.live_sent:
+            self.pub("live", jpeg, retain=False)
+            self.live_sent = digest
 
     # --- requests -----------------------------------------------------------
 
@@ -997,6 +1036,8 @@ class Daemon:
             log.info("lock %s", "on" if self.locked else "off")
         elif leaf == "req":
             self.on_request(payload)
+        elif leaf == "watch":
+            self.watch(payload)
         elif leaf == "catalog/index":
             if self.index_sent is None and payload:  # left by an earlier run
                 try:
@@ -1029,7 +1070,7 @@ class Daemon:
              "--will-topic", avail, "--will-payload", "offline",
              "--will-qos", "1", "--will-retain",
              "-t", f"{self.base}/cmd", "-t", f"{self.base}/lock", "-t", avail,
-             "-t", f"{self.base}/req",
+             "-t", f"{self.base}/req", "-t", f"{self.base}/watch",
              "-t", f"{self.base}/catalog/index"],
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=self.env)
 

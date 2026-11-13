@@ -21,6 +21,7 @@ from . import installer
 from .box import Box
 from .const import CONF_PRIVATE_KEY, DOMAIN
 from .covers import CoverCache
+from .live import LiveView
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
@@ -44,6 +45,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     from .dashboard import async_setup_dashboard
 
     websocket_api.async_register_command(hass, ws_access)
+    hass.http.register_view(LiveView())
     await async_setup_dashboard(hass)
     return True
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 import hashlib
@@ -29,6 +30,10 @@ from homeassistant.util import dt as dt_util
 from .const import CONF_CONTROL_USERS, CONF_TOPIC, DOMAIN, EVENT_WARNING
 
 _LOGGER = logging.getLogger(__name__)
+
+# How often Home Assistant tells the daemon the live screen is still watched;
+# the daemon's lease (LIVE_LEASE) is longer, so one lost message is no gap.
+WATCH_RENEW = timedelta(seconds=20)
 
 WARN_BEFORE = timedelta(minutes=5)
 RESEND_STOP = timedelta(minutes=1)
@@ -207,6 +212,11 @@ class Box:
         self.cover_hash: str | None = None
         self.screen: bytes | None = None  # a JPEG of what the TV shows
         self.screen_at: datetime | None = None  # when it arrived
+        # The live screen, only while someone watches it (see watch()).
+        self.live: bytes | None = None  # the latest big frame, never recorded
+        self._live_changed = asyncio.Event()  # set, then replaced, on each frame
+        self._viewers = 0
+        self._watch_renew: Callable[[], None] | None = None
         self.version: str | None = None
         self.game_id: str | None = None
         self.pausable: bool | None = None  # None: not known
@@ -271,6 +281,7 @@ class Box:
         entry.async_on_unload(
             async_track_time_interval(self.hass, self._tick, timedelta(minutes=1))
         )
+        entry.async_on_unload(self._stop_renewing)
 
     # --- who may control the box -----------------------------------------
 
@@ -312,6 +323,13 @@ class Box:
             self.cover = payload or None
             self.cover_hash = hashlib.sha256(payload).hexdigest()[:16] if payload else None
             self._update()
+            return
+        if leaf == "live":
+            # For the open streams only: no entity changes, so nothing reaches
+            # the recorder, the logbook or the history.
+            self.live = payload or None
+            self._live_changed.set()
+            self._live_changed = asyncio.Event()
             return
         if leaf == "screen":
             # The daemon publishes only changed screenshots.
@@ -430,6 +448,56 @@ class Box:
         except ValueError:
             answer = None
         future.set_result(answer if isinstance(answer, dict) else {"error": "bad_answer"})
+
+    # --- the live screen --------------------------------------------------
+
+    @callback
+    def watch(self) -> Callable[[], None]:
+        """One more viewer of the live screen. The first one starts the
+        daemon's frames, renewed while anyone watches; the callable returned
+        ends this one, and the last one stops them."""
+        self._viewers += 1
+        if self._viewers == 1:
+            self._send_watch()
+            self._watch_renew = async_track_time_interval(
+                self.hass, self._send_watch, WATCH_RENEW
+            )
+        ended = False
+
+        @callback
+        def end() -> None:
+            nonlocal ended
+            if ended:
+                return
+            ended = True
+            self._viewers -= 1
+            if self._viewers == 0 and self._watch_renew is not None:
+                self._stop_renewing()
+                self._publish("watch", "off")
+                self.live = None
+
+        return end
+
+    @callback
+    def _send_watch(self, _now: datetime | None = None) -> None:
+        self._publish("watch", "live")
+
+    @callback
+    def _stop_renewing(self) -> None:
+        if self._watch_renew is not None:
+            self._watch_renew()
+            self._watch_renew = None
+
+    async def async_next_live(self, last: bytes | None, timeout: float) -> bytes | None:
+        """The latest live frame as soon as it is not last; after timeout,
+        whatever there is (last again, or None)."""
+        if self.live is not None and self.live is not last:
+            return self.live
+        changed = self._live_changed
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(timeout):
+                await changed.wait()
+        return self.live
 
     async def async_stop(self) -> None:
         await mqtt.async_publish(self.hass, f"{self.prefix}/cmd", "stop", 1, False)
