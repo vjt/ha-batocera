@@ -726,6 +726,44 @@ class CatalogDaemonTest(unittest.TestCase):
                              "image/svg+xml")
         self.assertIsNone(hb.image_type(b"<?xml version='1.0'?><html><svg/></html>"))
         self.assertIsNone(hb.image_type(b"<!-- <svg/> -->"))
+        # A DOCTYPE with its own entities, as Illustrator writes it.
+        self.assertEqual(hb.image_type(b'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "x.dtd" [\n'
+                                       b'  <!ENTITY ns_svg "http://www.w3.org/2000/svg">\n]>\n<svg/>'),
+                         "image/svg+xml")
+
+    def test_image_type_is_quick_on_anything(self):
+        for junk in (b"<!---->" + b" " * 28 + b"x", b"<!DOCTYPE html>" + b"\n" * 28 + b"<html>",
+                     b"<!---->" + b" " * 4000 + b"x"):
+            start = time.monotonic()
+            self.assertIsNone(hb.image_type(junk))
+            self.assertLess(time.monotonic() - start, 0.1)
+
+    def test_first_read_waits_for_the_index_left_on_the_broker(self):
+        # mosquitto_sub hands back an earlier run's index a moment after the
+        # start: the first read waits for it, so no logo is left behind.
+        catalog = hb.build_catalog(SYNTHETIC["systems"], SYNTHETIC["games"])
+        index = [catalog["megadrive"].entry, {"name": "gone", "hash": "1" * 12}]
+        self.d.screen_every = 0
+        with mock.patch.object(hb, "running_launcher", return_value=None):
+            self.d.start()
+        self.d.run_timers()
+        self.assertFalse(self.retained("catalog/index"), "not read before the index came")
+        self.d.on_mqtt("batocera/test/catalog/index " + json.dumps(index))
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.run_timers()
+        self.assertEqual(self.retained("catalog/logo/gone"), [None])  # left the catalog
+        self.assertEqual(self.retained("catalog/logo/megadrive"), [None])  # has no logo
+
+    def test_first_read_without_an_index_left(self):
+        self.d.screen_every = 0
+        with mock.patch.object(hb, "running_launcher", return_value=None):
+            self.d.start()
+        self.d.run_timers()
+        self.assertFalse(self.retained("catalog/index"))
+        self.clock.t += hb.INDEX_WAIT
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.run_timers()
+        self.assertTrue(self.retained("catalog/index"))
 
     def test_after_a_game_its_system_is_read_again(self):
         self.refresh()

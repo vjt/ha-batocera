@@ -499,6 +499,27 @@ test("new logos: the folder is read again", async () => {
   assert.equal(t.asked("media_player/browse_media").length, asked + 1);
 });
 
+test("a new logo is fetched, not the one known", async () => {
+  // Home Assistant names the image in media_image_id: a new one is a new
+  // picture, while a new token is the same one.
+  const logo = (id, token = "t1") =>
+    `/api/media_player_proxy/media_player.arcade/browse_media/directory/system:mame?token=${token}&media_image_id=${id}`;
+  const root = (url) => folder("", "Arcade", [...FOLDERS[""].children, { ...folder("system:mame", "MAME"), thumbnail: url }]);
+  const folders = { ...MAME, "": root(logo("aaa")) };
+  const t = await mount(idleStates({ "media_player.arcade": s("idle", { catalog: "c1", logos: "l1" }) }), { folders });
+  await flush();
+  const mame = () => t.fetched.filter((u) => u.includes("system:mame"));
+  assert.deepEqual(mame(), [logo("aaa")]);
+  folders[""] = root(logo("aaa", "t2"));
+  await t.set(idleStates({ "media_player.arcade": s("idle", { catalog: "c2", logos: "l1" }) }));
+  await flush();
+  assert.deepEqual(mame(), [logo("aaa")], "same picture, new token");
+  folders[""] = root(logo("bbb", "t2"));
+  await t.set(idleStates({ "media_player.arcade": s("idle", { catalog: "c2", logos: "l2" }) }));
+  await flush();
+  assert.deepEqual(mame(), [logo("aaa"), logo("bbb", "t2")]);
+});
+
 // --- the launch sheet ---------------------------------------------------
 
 test("press start: launches, waits, and closes once it plays", async () => {

@@ -129,6 +129,20 @@ def test_logo_type():
                      b'"svg11.dtd"><svg width="1"/>') == "image/svg+xml"
     assert logo_type(b"<?xml version='1.0'?><html><svg/></html>") is None
     assert logo_type(b"<!-- <svg/> -->") is None
+    # A DOCTYPE with its own entities, as Illustrator writes it.
+    assert logo_type(b'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "svg11.dtd" [\n'
+                     b'  <!ENTITY ns_svg "http://www.w3.org/2000/svg">\n]>\n<svg/>') == "image/svg+xml"
+
+
+def test_logo_type_is_quick_on_anything():
+    # Logos arrive in Home Assistant's event loop: telling one must not take
+    # longer as blanks pile up in something that is no SVG.
+    for junk in (b"<!---->" + b" " * 28 + b"x", b"<!DOCTYPE html>" + b"\n" * 28 + b"<html>",
+                 b"<!---->" + b" " * 4000 + b"x"):
+        start = time.monotonic()
+        assert logo_type(junk) is None
+        assert contained_logo(junk) is None
+        assert time.monotonic() - start < 0.1
 
 
 EVIL = (b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 100" onload="alert(1)">'
@@ -146,8 +160,12 @@ def test_contained_logo():
     href = served.split(b'href="', 1)[1].split(b'"', 1)[0]
     assert base64.b64decode(href.removeprefix(b"data:image/svg+xml;base64,")) == EVIL
     assert logo_type(served) == "image/svg+xml"
-    # The size: the viewBox, else width and height, else what browsers use.
+    # The size: width and height, else the viewBox, else what browsers use.
     assert b'width="64" height="32"' in contained_logo(b'<svg width="64px" height="32"/>')
+    assert b'width="400" height="100"' in contained_logo(
+        b'<svg viewBox="0 0 100 100" width="400" height="100"/>')
+    assert b'width="64" height="32"' in contained_logo(
+        b'<!-- <svg width="1" height="1000"> --><svg width="64" height="32"/>')
     assert b'width="300" height="150"' in contained_logo(b'<svg width="100%" height="50%"/>')
     assert b'width="300" height="150"' in contained_logo(b'<svg viewBox="0 0 0 9" width="1e9"/>')
     assert b'width="300" height="150"' in contained_logo(b'<svg stroke-width="7" height="9"/>')
