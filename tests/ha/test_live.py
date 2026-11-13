@@ -45,6 +45,10 @@ async def setup(hass, mqtt_mock, entry):
     # clock too, so asyncio.sleep and wait_for would never wake up.
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    # The MQTT client's misc timer (1 s, stopped only when the socket closes,
+    # which the mock's never does) would outlive the test. The freezer's jump
+    # fired it at once and the mock's loop_misc ended it: do the same here.
+    await advance(hass, seconds=1)
     return entry
 
 
