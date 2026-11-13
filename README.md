@@ -4,7 +4,8 @@ Connects a [Batocera](https://batocera.org) retro-gaming box to
 [Home Assistant](https://www.home-assistant.io) over MQTT:
 
 - what is being played: game, system, emulator, cover art, since when;
-- what the TV shows, menus included: a screenshot every 15 seconds;
+- what the TV shows, menus included: a screenshot every 15 seconds, and live
+  while someone watches it;
 - how long it was played today;
 - a stop button, which quits the game the way the exit hotkey does, so saves
   are written;
@@ -56,6 +57,13 @@ box's own loopback address only: the browser never talks to the box.
   640-pixel-wide JPEG, both at the lowest CPU priority; it is published only
   when the screen changed. `screen_every=<seconds>` in `ha-batocera.conf`
   changes the interval, `screen_every=0` turns screenshots off.
+- While someone watches the live screen, the box sends a 1280-pixel-wide
+  frame every second the screen changed. Home Assistant asks for 60 seconds
+  of them at a time and renews them while anyone watches; when the last
+  viewer leaves, or Home Assistant goes away, they stop within a minute. The
+  frames are not retained and go to the open streams only: no entity changes
+  and the recorder never sees them. With screenshots off there is no live
+  screen either.
 - The state is published as retained MQTT messages. A persistent
   `mosquitto_sub` receives commands and holds the MQTT will that marks the box
   offline if the daemon or the network goes away.
@@ -143,7 +151,7 @@ daemon yourself, as root on the box. Either with
 over HTTPS only, and runs the installer from it:
 
 ```sh
-curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.4.2/get.sh && sh /tmp/ha-batocera-get.sh
+curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.5.0/get.sh && sh /tmp/ha-batocera-get.sh
 ```
 
 or by copying the `custom_components/batocera/daemon/` folder to the box and
@@ -239,14 +247,24 @@ The entities that mirror the box become unavailable when it is unreachable
 (MQTT will). After a clean shutdown the media player shows "off" instead.
 Playtime and limits are kept by Home Assistant and stay available.
 
+Each new screenshot is a change of `image.arcade_screen`, which the recorder
+keeps like any other. To keep them out of the history:
+
+```yaml
+recorder:
+  exclude:
+    entities:
+      - image.arcade_screen
+```
+
 ## The Batocera page
 
 The integration adds a **Batocera** page to the sidebar, with one tab per box.
 At the top, what is playing: cover, name, system, time played, and the time
 left before the daily limit or the end of the window (or FREE PLAY), with
 pause and a two-tap kill. Beside it, a preview of what the TV shows (the
-latest screenshot, menus too) while the box is on: tap it to see it as big as
-the page allows, tap again or press Escape to close it. Below, the box's games:
+latest screenshot, menus too) while the box is on: tap it to watch the TV live,
+as big as the page allows, tap again or press Escape to close it. Below, the box's games:
 favourites, recently played and one tile per system, with the system's logo
 when the theme has one. Inside a system, the ROM folders (for example MAME's
 genres) are tiles of their own. The search at the top covers every system;
@@ -353,18 +371,20 @@ All under `batocera/<device>/` (the prefix is set by `topic_prefix` and
 | `catalog/index` | yes | box | JSON: the systems in the catalog, see below |
 | `catalog/system/<name>` | yes | box | gzip-compressed JSON: the games of one system, see below |
 | `catalog/logo/<name>` | yes | box | raw SVG, PNG or JPEG bytes (at most 256 KB): the system's logo from the theme; empty when there is none |
+| `live` | no | box | raw JPEG bytes, 1280 px wide: what the TV shows, while someone watches |
 | `cmd` | no | Home Assistant | `stop` |
 | `lock` | yes | Home Assistant | `ON` / `OFF` |
 | `req` | no | Home Assistant | JSON: a request, see below |
+| `watch` | no | Home Assistant | `live`: someone watches, send live frames for 60 seconds; `off`: nobody does |
 | `resp/<id>` | no | box | JSON: the answer to request `<id>` |
 
 An empty retained message clears the topic. When a game ends, `last_session`
 is published before `state` turns `idle`.
 
 If your broker uses ACLs, the box needs to publish to `batocera/<device>/#`
-and to subscribe to its `cmd`, `lock`, `req`, `availability` and
+and to subscribe to its `cmd`, `lock`, `req`, `watch`, `availability` and
 `catalog/index` topics; Home Assistant needs to read `batocera/<device>/#` and
-to publish `cmd`, `lock` and `req`.
+to publish `cmd`, `lock`, `req` and `watch`.
 
 ### The catalog
 
