@@ -143,7 +143,7 @@ daemon yourself, as root on the box. Either with
 over HTTPS only, and runs the installer from it:
 
 ```sh
-curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.3.3/get.sh && sh /tmp/ha-batocera-get.sh
+curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.4.0/get.sh && sh /tmp/ha-batocera-get.sh
 ```
 
 or by copying the `custom_components/batocera/daemon/` folder to the box and
@@ -244,10 +244,15 @@ Playtime and limits are kept by Home Assistant and stay available.
 The integration adds a **Batocera** page to the sidebar, with one tab per box.
 At the top, what is playing: cover, name, system, time played, and the time
 left before the daily limit or the end of the window (or FREE PLAY), with
-pause and a two-tap kill. Under it, what the TV shows (the latest screenshot,
-menus too) while the box is on. Below, the box's games: favourites, recently played
-and one folder per system, with a search. Tap a game, then PRESS START: the
-running game is quit and the new one launched.
+pause and a two-tap kill. Beside it, a preview of what the TV shows (the
+latest screenshot, menus too) while the box is on: tap it to see it as big as
+the page allows, tap again or press Escape to close it. Below, the box's games:
+favourites, recently played and one tile per system, with the system's logo
+when the theme has one. Inside a system, the ROM folders (for example MAME's
+genres) are tiles of their own. The search at the top covers every system;
+inside a system, that system with its folders; in favourites or recently
+played, that list. Tap a game, then PRESS START: the running game is quit and
+the new one launched.
 
 Everyone who can open Home Assistant sees the page and browses the games.
 **Launching, pausing and stopping games** takes an admin, or a user picked in
@@ -347,6 +352,7 @@ All under `batocera/<device>/` (the prefix is set by `topic_prefix` and
 | `public_web_access` | yes | box | `ON` / `OFF`: whether EmulationStation's web API is open to the network |
 | `catalog/index` | yes | box | JSON: the systems in the catalog, see below |
 | `catalog/system/<name>` | yes | box | gzip-compressed JSON: the games of one system, see below |
+| `catalog/logo/<name>` | yes | box | raw SVG, PNG or JPEG bytes (at most 256 KB): the system's logo from the theme; empty when there is none |
 | `cmd` | no | Home Assistant | `stop` |
 | `lock` | yes | Home Assistant | `ON` / `OFF` |
 | `req` | no | Home Assistant | JSON: a request, see below |
@@ -378,13 +384,15 @@ EmulationStation is in Kid mode, only the games marked as kid games.
 then. `catalog/system/<name>` holds, gzip-compressed, one row per game:
 
 ```json
-[["9b1c4e0d2a37", "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000"],
- ["0d5e7a9b3c21", "Streets of Rage", 1991, "Beat'em up", "1-2", 0, 0, ""]]
+[["9b1c4e0d2a37", "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000", "Platform"],
+ ["0d5e7a9b3c21", "Streets of Rage", 1991, "Beat'em up", "1-2", 0, 0, "", ""]]
 ```
 
 That is: id, name, year (or `null`), genre, players, flags, play count, last
-played (EmulationStation's local time, or empty). Flags: 1 = favourite, 2 =
-has a cover. The id is the first 12 hex digits of the MD5 of the ROM's path:
+played (EmulationStation's local time, or empty), folder. Flags: 1 =
+favourite, 2 = has a cover. The folder is where the ROM sits under its
+system's ROM folder (`Fighter` for `/userdata/roms/mame/Fighter/kinst.zip`,
+`a/b` when nested), empty for a ROM at the top. The id is the first 12 hex digits of the MD5 of the ROM's path:
 `game_id` uses the same, so the running game can be found in the catalog.
 
 The catalog is published when the daemon starts (and again until
