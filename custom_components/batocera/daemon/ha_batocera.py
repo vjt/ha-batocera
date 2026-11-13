@@ -1023,7 +1023,7 @@ class Daemon:
              "-t", f"{self.base}/catalog/index"],
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=self.env)
 
-    def start(self):
+    def boot(self):
         """What serve() does first. The catalog waits a moment: mosquitto_sub
         hands back the index an earlier run left, and with it what is on the
         broker, so the first read leaves nothing behind (see on_mqtt)."""
@@ -1043,7 +1043,7 @@ class Daemon:
         sel.register(fifo_fd, selectors.EVENT_READ, self.on_line)
         bufs = {fifo_fd: b""}
         sub, sub_at = None, 0.0
-        self.start()
+        self.boot()
         try:
             while True:
                 if sub is None and self.now() >= sub_at:

@@ -745,7 +745,7 @@ class CatalogDaemonTest(unittest.TestCase):
         index = [catalog["megadrive"].entry, {"name": "gone", "hash": "1" * 12}]
         self.d.screen_every = 0
         with mock.patch.object(hb, "running_launcher", return_value=None):
-            self.d.start()
+            self.d.boot()
         self.d.run_timers()
         self.assertFalse(self.retained("catalog/index"), "not read before the index came")
         self.d.on_mqtt("batocera/test/catalog/index " + json.dumps(index))
@@ -757,7 +757,7 @@ class CatalogDaemonTest(unittest.TestCase):
     def test_first_read_without_an_index_left(self):
         self.d.screen_every = 0
         with mock.patch.object(hb, "running_launcher", return_value=None):
-            self.d.start()
+            self.d.boot()
         self.d.run_timers()
         self.assertFalse(self.retained("catalog/index"))
         self.clock.t += hb.INDEX_WAIT
