@@ -1127,6 +1127,21 @@ class DaemonTest(TempDirTest):
         self.d.tick()  # the launcher is alive: the session stays
         self.assertIsNotNone(self.d.game)
 
+    def test_squashfs_game_named_by_the_launchers_rom(self):
+        # The launcher mounts a .squashfs game and hands the hook the mount;
+        # its -rom is the path ES and the catalog know.
+        Path(self.rom).with_name("gamelist.xml").write_text(
+            GAMELIST.replace("./Sonic.zip", "./Sonic.squashfs"))
+        rom = str(Path(self.rom).with_name("Sonic.squashfs"))
+        launcher = self.fake_launcher("-system", "megadrive", "-rom", rom)
+        line = "\t".join(["gameStart", str(launcher.pid), "megadrive", "libretro",
+                          "genesisplusgx", "/var/run/squashfs/Sonic/Sonic.md"])
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.on_line(line)
+        published = self.run.published()
+        self.assertIn(("batocera/test/game", "Sonic & Knuckles"), published)
+        self.assertIn(("batocera/test/game_id", hb.game_id(rom)), published)
+
     def test_adopt_without_hotkeys_context(self):
         self.fake_launcher("-system", "megadrive", "-rom", self.rom)
         self.d.hotkeys = self.tmp / "missing"

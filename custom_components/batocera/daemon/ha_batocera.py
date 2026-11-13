@@ -465,24 +465,31 @@ def started_at(pid):
     return None
 
 
-def running_launcher():
-    """The launcher of a game that is running: (pid, system, rom), or None.
+def launcher_args(pid):
+    """(system, rom) from the command line of launcher pid, or None.
 
     Read from emulatorlauncher's command line, "python emulatorlauncher
     -system <system> -rom <rom> ...", not from a log that may be a launch old.
+    The ROM is the path ES launched, even for a .squashfs game, which the
+    launcher mounts and hands its scripts by the mount.
     """
+    try:
+        argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace").split("\0")
+    except OSError:
+        return None
+    if not any(Path(arg).name == "emulatorlauncher" for arg in argv[:2]):
+        return None
+    opts = dict(zip(argv, argv[1:]))  # each argument -> the one after it
+    if opts.get("-system") and opts.get("-rom"):
+        return opts["-system"], opts["-rom"]
+    return None
+
+
+def running_launcher():
+    """The launcher of a game that is running: (pid, system, rom), or None."""
     for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            argv = entry.joinpath("cmdline").read_bytes().decode(errors="replace").split("\0")
-        except OSError:
-            continue
-        if not any(Path(arg).name == "emulatorlauncher" for arg in argv[:2]):
-            continue
-        opts = dict(zip(argv, argv[1:]))  # each argument -> the one after it
-        if opts.get("-system") and opts.get("-rom"):
-            return int(entry.name), opts["-system"], opts["-rom"]
+        if entry.name.isdigit() and (args := launcher_args(entry.name)):
+            return int(entry.name), *args
     return None
 
 
@@ -871,7 +878,10 @@ class Daemon:
             log.warning("bad hook line: %r", line)
             return
         if event == "gameStart" and len(parts) >= 6:
-            self.start(pid, *parts[2:6])
+            # The hook gets a .squashfs game by its mount under /var/run/squashfs:
+            # the launcher's -rom is the path ES and the catalog know.
+            args = launcher_args(pid)
+            self.start(pid, *parts[2:5], args[1] if args else parts[5])
         elif event == "gameStop":
             if self.game:
                 self.end()

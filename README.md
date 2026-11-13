@@ -143,7 +143,7 @@ daemon yourself, as root on the box. Either with
 over HTTPS only, and runs the installer from it:
 
 ```sh
-curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.4.1/get.sh && sh /tmp/ha-batocera-get.sh
+curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.4.2/get.sh && sh /tmp/ha-batocera-get.sh
 ```
 
 or by copying the `custom_components/batocera/daemon/` folder to the box and
