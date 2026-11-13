@@ -119,7 +119,8 @@ class Recorder:
         for cmd, data in self.calls:
             if cmd[0] == "mosquitto_pub":
                 topic = cmd[cmd.index("-t") + 1]
-                binary = any(t in topic for t in ("/cover", "/screen", "/catalog/system/"))
+                binary = any(t in topic for t in ("/cover", "/screen", "/catalog/system/",
+                                                  "/catalog/logo/"))
                 out.append((topic, data.decode() if data and not binary else data))
         return out
 
@@ -376,11 +377,30 @@ class CatalogTest(TempDirTest):
         sonic = hb.game_id("/userdata/roms/megadrive/Sonic.zip")
         sor = hb.game_id("/userdata/roms/megadrive/Streets of Rage.zip")
         self.assertEqual(rows, [  # by name; the hidden game is left out
-            [hb.game_id("/userdata/roms/megadrive/Bare.zip"), "Bare", None, "", "", 0, 0, ""],
-            [hb.game_id("/userdata/roms/megadrive/Comix Zone.zip"), "Comix Zone", None, "", "", 0, 0, ""],
-            [sonic, "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000"],
-            [sor, "Streets of Rage", 1991, "Beat'em up", "1-2", 2, 0, ""],
+            [hb.game_id("/userdata/roms/megadrive/Bare.zip"), "Bare", None, "", "", 0, 0, "", ""],
+            [hb.game_id("/userdata/roms/megadrive/Comix Zone.zip"), "Comix Zone", None, "", "", 0, 0, "", ""],
+            [sonic, "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000", ""],
+            [sor, "Streets of Rage", 1991, "Beat'em up", "1-2", 2, 0, "", ""],
         ])
+
+    def test_rom_folder(self):
+        # Only the folder under the system's ROM folder ever leaves the box.
+        self.assertEqual(hb.rom_folder("/userdata/roms/mame/Fighter/kinst.zip"), "Fighter")
+        self.assertEqual(hb.rom_folder("/userdata/roms/amiga1200/Extra/Demos/x.lha"), "Extra/Demos")
+        self.assertEqual(hb.rom_folder("/userdata/roms/snes/a.sfc"), "")
+        self.assertEqual(hb.rom_folder("/userdata/roms/a.sfc"), "")
+        self.assertEqual(hb.rom_folder("/media/usb/x.zip"), "")
+        self.assertEqual(hb.rom_folder("/userdata/roms/mame/../../etc/x.zip"), "")
+        self.assertEqual(hb.rom_folder("/userdata/roms/mame/Shooter - Vertical/1942.zip"),
+                         "Shooter - Vertical")
+
+    def test_catalog_rows_carry_the_folder(self):
+        games = json.loads(json.dumps(SYNTHETIC["games"]))
+        games["megadrive"].append({"path": "/userdata/roms/megadrive/Platform/Sonic 2.zip",
+                                   "name": "Sonic 2", "id": "a9"})
+        rows = {r[1]: r for r in json.loads(self.build(games=games)["megadrive"].data)}
+        self.assertEqual(rows["Sonic 2"][8], "Platform")
+        self.assertEqual(rows["Bare"][8], "")
 
     def test_roms_stay_on_the_box(self):
         roms = self.build()["megadrive"].roms
@@ -609,6 +629,72 @@ class CatalogDaemonTest(unittest.TestCase):
             self.d.refresh_catalog(only="snes")
         self.assertEqual(list(self.d.catalog), ["megadrive", "snes"])
         self.assertIn("catalog", self.d.timers)
+
+    SVG = b'\xef\xbb\xbf <?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"/>'
+    PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+
+    def retained(self, leaf):
+        """Payloads published, retained, on <base>/<leaf>."""
+        topic = f"batocera/test/{leaf}"
+        return [data for cmd, data in self.run.calls
+                if cmd[0] == "mosquitto_pub" and cmd[cmd.index("-t") + 1] == topic and "-r" in cmd]
+
+    def test_logos_published_once_and_cleared(self):
+        self.fake.media["/systems/megadrive/logo"] = self.SVG
+        self.fake.media["/systems/snes/logo"] = self.PNG
+        self.refresh()
+        self.assertEqual(self.retained("catalog/logo/megadrive"), [self.SVG])
+        self.assertEqual(self.retained("catalog/logo/snes"), [self.PNG])
+        self.assertEqual([t for t, _ in self.published()], [  # after the catalog
+            "batocera/test/catalog/system/megadrive", "batocera/test/catalog/system/snes",
+            "batocera/test/catalog/index",
+            "batocera/test/catalog/logo/megadrive", "batocera/test/catalog/logo/snes"])
+        self.refresh()  # the same logos: nothing
+        self.assertEqual(self.published(), [])
+        self.fake.media["/systems/snes/logo"] = self.PNG + b"x"  # a new theme
+        self.refresh()
+        self.assertEqual(self.published(), [("batocera/test/catalog/logo/snes", self.PNG + b"x")])
+        del self.fake.media["/systems/snes/logo"]  # a theme without it
+        self.refresh()
+        self.assertEqual(self.published(), [("batocera/test/catalog/logo/snes", None)])
+        self.fake.systems = [s for s in SYNTHETIC["systems"] if s["name"] != "megadrive"]
+        self.refresh()  # a system that leaves the catalog loses its logo
+        self.assertEqual(self.retained("catalog/logo/megadrive"), [None])
+        self.assertEqual(self.published()[-1], ("batocera/test/catalog/logo/megadrive", None))
+
+    def test_logos_only_on_a_full_read(self):
+        self.refresh()
+        self.fake.requests.clear()
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.refresh_catalog(only="snes")
+        self.assertNotIn(("GET", "/systems/snes/logo"), self.fake.requests)
+
+    def test_bad_logo_is_skipped(self):
+        # snes: 404, no logo and no warning. megadrive: an error page, then
+        # an SVG too big: never published, one warning.
+        self.fake.media["/systems/megadrive/logo"] = b"<html><body>oops</body></html>"
+        with self.assertLogs(hb.log, "INFO") as logs:
+            self.assertTrue(self.d.refresh_catalog())
+        warnings = [r.getMessage() for r in logs.records if r.levelname == "WARNING"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("megadrive", warnings[0])
+        self.fake.media["/systems/megadrive/logo"] = b"<svg>" + b" " * hb.LOGO_MAX
+        with self.assertLogs(hb.log, "INFO") as logs:
+            self.d.refresh_catalog()
+        self.assertEqual([r for r in logs.records if r.levelname == "WARNING"], [])
+        topics = [t for t, _ in self.published()]
+        self.assertIn("batocera/test/catalog/index", topics)
+        self.assertFalse([t for t in topics if "/catalog/logo/" in t])
+
+    def test_es_down_while_reading_logos(self):
+        with mock.patch.object(self.d.es, "logo", side_effect=hb.EsError("down")) as logo:
+            with self.assertLogs(hb.log, "INFO") as logs:
+                self.assertTrue(self.d.refresh_catalog())
+        self.assertEqual(logo.call_count, 1)  # not once per system
+        self.assertTrue([r for r in logs.records if r.levelname == "WARNING"])
+        topics = [t for t, _ in self.published()]
+        self.assertIn("batocera/test/catalog/index", topics)
+        self.assertFalse([t for t in topics if "/catalog/logo/" in t])
 
     def test_after_a_game_its_system_is_read_again(self):
         self.refresh()

@@ -53,6 +53,7 @@ REQ_ID = re.compile(r"^[0-9a-f]{8,32}$")
 ES_URL = "http://127.0.0.1:1234"
 ES_TIMEOUT = 10         # seconds for one call to EmulationStation
 ES_MAX = 32 * 1024 * 1024  # never read a bigger answer
+LOGO_MAX = 256 * 1024   # never publish a bigger system logo
 CATALOG_EVERY = 30 * 60  # seconds between catalog reads while no game runs
 CATALOG_RETRY = 30      # seconds before asking EmulationStation again
 CATALOG_AFTER_GAME = 10  # seconds after a game, for its play count to be saved
@@ -272,6 +273,29 @@ def es_int(value):
         return 0
 
 
+def rom_folder(path, roms=ROMS):
+    """The folder of a ROM under its system's ROM folder: "Fighter" for
+    /userdata/roms/mame/Fighter/kinst.zip, "" for a ROM at the top or
+    outside the ROM folders. Never more of the path than that."""
+    parts = Path(os.path.normpath(path)).parts
+    top = roms.parts
+    if parts[:len(top)] != top or len(parts) < len(top) + 3:
+        return ""
+    return "/".join(parts[len(top) + 1:-1])
+
+
+def image_type(data):
+    """The media type of a logo's bytes: SVG, PNG or JPEG, else None."""
+    head = data[:4096].removeprefix(b"\xef\xbb\xbf").lstrip()
+    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head):
+        return "image/svg+xml"
+    if head.startswith(b"\x89PNG"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    return None
+
+
 def catalog_system(system, games, kid_mode):
     """One system's catalog, or None when no game of it is shown."""
     name = system["name"]
@@ -288,7 +312,7 @@ def catalog_system(system, games, kid_mode):
         rows[gid] = [gid, str(game.get("name") or Path(path).stem),
                      es_year(game.get("releasedate")), str(game.get("genre") or ""),
                      str(game.get("players") or ""), flags, es_int(game.get("playcount")),
-                     str(game.get("lastplayed") or "")]
+                     str(game.get("lastplayed") or ""), rom_folder(path)]
         roms[gid] = Rom(name, os.path.normpath(path), str(game.get("id", "")), media)
     if not rows:
         return None
@@ -340,6 +364,7 @@ class EsApi:
         self.base = base
         # No proxy from the environment: this is the box talking to itself.
         self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.bad_logos = set()  # systems whose logo was warned about
 
     def request(self, path, data=None):
         """(HTTP status, body); EsError if nothing answers."""
@@ -374,6 +399,20 @@ class EsApi:
         path = f"/systems/{quote(system, safe='')}/games/{quote(es_id, safe='')}/media/{key}"
         status, body = self.request(path)
         return body if status == 200 and body else None
+
+    def logo(self, system):
+        """The system's logo from the theme (SVG, PNG or JPEG, at most
+        LOGO_MAX bytes), or None. A body that is not one is warned about
+        once per system: a theme or an EmulationStation that changed."""
+        status, body = self.request(f"/systems/{quote(system, safe='')}/logo")
+        if status != 200 or not body:
+            return None
+        if len(body) <= LOGO_MAX and image_type(body):
+            return body
+        if system not in self.bad_logos:
+            self.bad_logos.add(system)
+            log.warning("logo of %s: %d bytes, not an image or too big", system, len(body))
+        return None
 
     def running(self):
         """Whether a game runs: 200 with the game, 201 when there is none."""
@@ -473,6 +512,7 @@ class Daemon:
         self.roms = {}        # game id -> Rom, from the catalog
         self.published = {}   # system name -> hash, as on the broker
         self.index_sent = None  # the catalog/index payload on the broker
+        self.logos_sent = {}  # system name -> hash of its logo on the broker
         self.launching = None   # the launch in progress: {rid, rom, until}
         self.public_web = None  # what public_web_access says on the broker
 
@@ -546,6 +586,27 @@ class Daemon:
         for name in sorted(set(self.published) - set(self.catalog)):
             self.pub(f"catalog/system/{name}", "")
         self.published = {name: s.entry["hash"] for name, s in self.catalog.items()}
+
+    def publish_logos(self):
+        """Each system's logo, retained, when it changed; cleared for a
+        system without one or gone from the catalog. What is on the broker
+        stays when EmulationStation stops answering."""
+        for name in self.catalog:
+            try:
+                data = self.es.logo(name)
+            except EsError as err:
+                log.warning("logos: %s", err)
+                return
+            digest = hashlib.sha256(data).hexdigest()[:12] if data else None
+            if digest != self.logos_sent.get(name):
+                self.pub(f"catalog/logo/{name}", data or "")
+                if digest:
+                    self.logos_sent[name] = digest
+                else:
+                    del self.logos_sent[name]
+        for name in sorted(set(self.logos_sent) - set(self.catalog)):
+            self.pub(f"catalog/logo/{name}", "")
+            del self.logos_sent[name]
 
     def publish_all(self):
         self.pub("availability", "online")
@@ -762,7 +823,8 @@ class Daemon:
         self.roms = {gid: rom for s in catalog.values() for gid, rom in s.roms.items()}
         log.info("catalog: %d games in %d systems", len(self.roms), len(catalog))
         self.publish_catalog()
-        if only is None:
+        if only is None:  # logos come with the theme, not with a game
+            self.publish_logos()
             self.catalog_read = True
             self.at("catalog", CATALOG_EVERY, self.scheduled_catalog)
         return True
