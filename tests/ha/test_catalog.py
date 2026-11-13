@@ -11,7 +11,13 @@ import time
 import pytest
 from pytest_homeassistant_custom_component.common import async_fire_mqtt_message
 
-from custom_components.batocera.box import LOGO_MAX, BoxError, Game, logo_type
+from custom_components.batocera.box import (
+    LOGO_MAX,
+    BoxError,
+    Game,
+    contained_logo,
+    logo_type,
+)
 
 from conftest import BARE, INDEX, MARIO, ROWS, SONIC, SOR, TOPIC, publish_catalog
 
@@ -95,11 +101,16 @@ async def test_logos(hass, mqtt_mock, setup):
     fire(hass, "catalog/logo/garbage", b"hello")
     fire(hass, "catalog/logo/huge", b"<svg>" + b" " * LOGO_MAX)
     await hass.async_block_till_done()
-    assert box.logos == {"snes": SVG, "megadrive": PNG, "nes": SVG}
+    contained = contained_logo(SVG)
+    assert box.logos == {"snes": contained, "megadrive": PNG, "nes": contained}
+    logos = hass.states.get("media_player.arcade").attributes["logos"]
+    assert logos and set(box.logo_ids) == {"snes", "megadrive", "nes"}
     fire(hass, "catalog/logo/snes", b"")  # cleared
     fire(hass, "catalog/logo/megadrive", b"hello")  # replaced by garbage
     await hass.async_block_till_done()
-    assert box.logos == {"nes": SVG}
+    assert box.logos == {"nes": contained} and set(box.logo_ids) == {"nes"}
+    # The panel is told: the attribute changes with the logos.
+    assert hass.states.get("media_player.arcade").attributes["logos"] not in (None, logos)
     assert len(box.games) == 4  # the catalog is untouched
 
 
@@ -111,6 +122,37 @@ def test_logo_type():
     assert logo_type(b"<?xml version='1.0'?><html/>") is None
     assert logo_type(b"<html><body>404</body></html>") is None
     assert logo_type(b"") is None
+    # Comments and a DOCTYPE may come first; <svg> inside something else may not.
+    assert logo_type(b"<!-- Generator: Adobe Illustrator -->\n<svg/>") == "image/svg+xml"
+    assert logo_type(b'<?xml version="1.0"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" '
+                     b'"svg11.dtd"><svg width="1"/>') == "image/svg+xml"
+    assert logo_type(b"<?xml version='1.0'?><html><svg/></html>") is None
+    assert logo_type(b"<!-- <svg/> -->") is None
+
+
+EVIL = (b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 100" onload="alert(1)">'
+        b"<script>alert(2)</script></svg>")
+
+
+def test_contained_logo():
+    # An SVG is served inside one of ours, drawn as an image: its scripts
+    # never run, even when the logo is opened on its own.
+    served = contained_logo(EVIL)
+    assert served.startswith(b'<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100" '
+                             b'viewBox="0 0 400 100"><image width="400" height="100" '
+                             b'href="data:image/svg+xml;base64,')
+    assert b"script" not in served and b"onload" not in served
+    href = served.split(b'href="', 1)[1].split(b'"', 1)[0]
+    assert base64.b64decode(href.removeprefix(b"data:image/svg+xml;base64,")) == EVIL
+    assert logo_type(served) == "image/svg+xml"
+    # The size: the viewBox, else width and height, else what browsers use.
+    assert b'width="64" height="32"' in contained_logo(b'<svg width="64px" height="32"/>')
+    assert b'width="300" height="150"' in contained_logo(b'<svg width="100%" height="50%"/>')
+    assert b'width="300" height="150"' in contained_logo(b'<svg viewBox="0 0 0 9" width="1e9"/>')
+    assert b'width="300" height="150"' in contained_logo(b'<svg stroke-width="7" height="9"/>')
+    # PNG and JPEG as they are; anything else is no logo.
+    assert contained_logo(PNG) == PNG
+    assert contained_logo(b"hello") is None
 
 
 async def test_new_leaves(hass, mqtt_mock, setup):
@@ -310,11 +352,13 @@ async def test_system_logo_image(hass, mqtt_mock, setup, hass_ws_client, hass_cl
     assert snes["thumbnail"].startswith(
         "/api/media_player_proxy/media_player.arcade/browse_media/game/system:snes?token="
     )
+    box = setup.runtime_data
+    assert f"media_image_id={box.logo_ids['snes']}" in snes["thumbnail"]  # a new logo, a new URL
     client = await hass_client()
     response = await client.get(snes["thumbnail"])
     assert response.status == 200
     assert response.content_type == "image/svg+xml"
-    assert await response.read() == SVG
+    assert await response.read() == contained_logo(SVG)
     assert (await client.get(snes["thumbnail"].replace("snes", "megadrive"))).status == 404
 
 

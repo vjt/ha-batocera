@@ -548,6 +548,10 @@ class CatalogDaemonTest(unittest.TestCase):
             ("batocera/test/catalog/system/snes", False),
             ("batocera/test/catalog/index", False),
             ("batocera/test/catalog/system/gone", True),
+            # No logos now: whatever the earlier run left is cleared.
+            ("batocera/test/catalog/logo/megadrive", True),
+            ("batocera/test/catalog/logo/snes", True),
+            ("batocera/test/catalog/logo/gone", True),
         ])
         # Our own index, seen again, changes nothing.
         self.d.on_mqtt("batocera/test/catalog/index " + json.dumps(index))
@@ -695,6 +699,33 @@ class CatalogDaemonTest(unittest.TestCase):
         topics = [t for t, _ in self.published()]
         self.assertIn("batocera/test/catalog/index", topics)
         self.assertFalse([t for t in topics if "/catalog/logo/" in t])
+
+    def test_logos_after_a_restart(self):
+        # An earlier run left its index, and maybe logos, on the broker: the
+        # first read publishes every logo again and clears the others, so
+        # none of the old ones stays behind.
+        catalog = hb.build_catalog(SYNTHETIC["systems"], SYNTHETIC["games"])
+        index = [catalog["megadrive"].entry, catalog["snes"].entry,
+                 {"name": "gone", "hash": "1" * 12}]
+        self.d.on_mqtt("batocera/test/catalog/index " + json.dumps(index))
+        self.fake.media["/systems/snes/logo"] = self.PNG
+        self.refresh()
+        self.assertEqual(self.retained("catalog/logo/snes"), [self.PNG])
+        self.assertEqual(self.retained("catalog/logo/megadrive"), [None])  # lost its logo
+        self.assertEqual(self.retained("catalog/logo/gone"), [None])  # left the catalog
+        self.published()
+        self.refresh()  # then only changes
+        self.assertEqual(self.published(), [])
+
+    def test_svg_after_a_comment_or_doctype(self):
+        for head in (b"<!-- Generator: Adobe Illustrator 24 -->\n",
+                     b'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" '
+                     b'"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n',
+                     b'<?xml version="1.0"?>\n<!-- a -->\n<!DOCTYPE svg>\n'):
+            self.assertEqual(hb.image_type(head + b'<svg xmlns="http://www.w3.org/2000/svg"/>'),
+                             "image/svg+xml")
+        self.assertIsNone(hb.image_type(b"<?xml version='1.0'?><html><svg/></html>"))
+        self.assertIsNone(hb.image_type(b"<!-- <svg/> -->"))
 
     def test_after_a_game_its_system_is_read_again(self):
         self.refresh()

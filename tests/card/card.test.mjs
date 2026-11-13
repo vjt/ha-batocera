@@ -488,6 +488,17 @@ test("a new catalog is read again; a system gone leads back to the top", async (
   assert.equal(t.tiles().length, 4);
 });
 
+test("new logos: the folder is read again", async () => {
+  const t = await mount(idleStates());
+  const asked = t.asked("media_player/browse_media").length;
+  await t.set(idleStates({ "media_player.arcade": s("idle", { catalog: "c1", logos: "l1" }) }));
+  await flush();
+  assert.equal(t.asked("media_player/browse_media").length, asked + 1);
+  await t.set(idleStates({ "media_player.arcade": s("idle", { catalog: "c1", logos: "l1" }) }));
+  await flush();
+  assert.equal(t.asked("media_player/browse_media").length, asked + 1);
+});
+
 // --- the launch sheet ---------------------------------------------------
 
 test("press start: launches, waits, and closes once it plays", async () => {
