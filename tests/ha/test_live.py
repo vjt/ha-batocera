@@ -39,6 +39,15 @@ def quick_keepalive():
         yield
 
 
+@pytest.fixture
+async def setup(hass, mqtt_mock, entry):
+    # conftest's setup, minus the freezer: a frozen clock is the event loop's
+    # clock too, so asyncio.sleep and wait_for would never wake up.
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
 def watches(mqtt_mock):
     return [p for t, p, r in published(mqtt_mock) if t == f"{TOPIC}/watch" and not r]
 
