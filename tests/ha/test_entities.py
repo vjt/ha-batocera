@@ -132,6 +132,37 @@ async def test_entities_follow_the_box(hass, mqtt_mock, setup, hass_client):
     assert hass.states.get("binary_sensor.arcade_playing").state == STATE_OFF
 
 
+async def test_screen(hass, mqtt_mock, setup, hass_client, freezer):
+    assert hass.states.get("image.arcade_screen").state == STATE_UNAVAILABLE
+    fire(hass, "availability", "online")
+    await hass.async_block_till_done()
+    assert hass.states.get("image.arcade_screen").state == STATE_UNKNOWN
+
+    client = await hass_client()
+    fire(hass, "screen", b"\xff\xd8 the menu")
+    await hass.async_block_till_done()
+    screen = hass.states.get("image.arcade_screen")
+    assert dt_util.parse_datetime(screen.state) == dt_util.utcnow()
+    response = await client.get(screen.attributes["entity_picture"])
+    assert response.status == 200
+    assert response.content_type == "image/jpeg"
+    assert await response.read() == b"\xff\xd8 the menu"
+
+    await advance(hass, freezer, seconds=15)
+    fire(hass, "screen", b"\xff\xd8 a game")
+    await hass.async_block_till_done()
+    later = hass.states.get("image.arcade_screen")
+    assert dt_util.parse_datetime(later.state) == dt_util.utcnow()
+    assert later.state != screen.state  # cards reload the picture
+    response = await client.get(later.attributes["entity_picture"])
+    assert await response.read() == b"\xff\xd8 a game"
+
+    # Cleared when the daemon cannot take one, or the box goes away.
+    fire(hass, "screen", b"")
+    await hass.async_block_till_done()
+    assert hass.states.get("image.arcade_screen").state == STATE_UNKNOWN
+
+
 async def test_stop(hass, mqtt_mock, setup):
     await play(hass)
     mqtt_mock.async_publish.reset_mock()

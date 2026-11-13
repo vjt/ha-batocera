@@ -60,6 +60,11 @@ LAUNCH_IDLE_WAIT = 10   # seconds for EmulationStation to be idle before a launc
 LAUNCH_POLL = 1         # seconds between asks whether it is
 LAUNCH_START_WAIT = 30  # seconds for a launched game to start
 PAUSABLE_AFTER = 5      # seconds after a start: the launcher sets the hotkeys after the hook
+SCREEN_EVERY = 15       # seconds between screenshots; 0 in the settings turns them off
+SCREEN_WIDTH = 640      # screenshot width, pixels
+# Where Batocera's Wayland compositor listens, for grim. The service does not
+# inherit the session's environment, so these are the defaults.
+WAYLAND = {"WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": "/var/run"}
 
 log = logging.getLogger("ha-batocera")
 
@@ -144,6 +149,40 @@ def make_cover(image, run=subprocess.run, size=COVER_SIZE, nice=False):
                     image, out.returncode, len(out.stdout or b""))
         return None
     return out.stdout
+
+
+class ScreenError(Exception):
+    """No screenshot: no compositor to ask, or grim or ffmpeg failed."""
+
+
+def grab_screen(run=subprocess.run, env=None, width=SCREEN_WIDTH):
+    """A JPEG of what the TV shows, width px wide.
+
+    grim asks the Wayland compositor (Batocera 40 and later) for an
+    uncompressed PNG, ffmpeg scales it down. Both at the lowest priority, not
+    to slow down a game being played.
+    """
+    env = {**WAYLAND, **(os.environ if env is None else env)}
+    scale = f"scale='min({width},iw)':-2"
+    steps = [
+        ["nice", "-n", "19", "grim", "-t", "png", "-l", "0", "-"],
+        ["nice", "-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error",
+         "-f", "png_pipe", "-i", "-", "-vf", scale, "-frames:v", "1",
+         "-q:v", "5", "-f", "mjpeg", "-"],
+    ]
+    data = None  # grim reads nothing, ffmpeg reads grim's PNG
+    for cmd in steps:
+        try:
+            out = run(cmd, input=data, env=env, capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError) as err:
+            raise ScreenError(f"{cmd[3]}: {err}") from err
+        if out.returncode or not out.stdout:
+            err = (out.stderr or b"").decode(errors="replace").strip()
+            raise ScreenError(f"{cmd[3]}: rc {out.returncode} {err}".strip())
+        data = out.stdout
+    if len(data) > COVER_MAX:
+        raise ScreenError(f"{len(data)} bytes")
+    return data
 
 
 def pausable_from(text):
@@ -370,7 +409,7 @@ def descendants(pid):
 
 class Daemon:
     def __init__(self, base, env, run=subprocess.run, now=time.time, es=None,
-                 settings=es_settings, hotkeys=HOTKEYS):
+                 settings=es_settings, hotkeys=HOTKEYS, screen_every=SCREEN_EVERY):
         self.base = base
         self.env = env
         self.run = run
@@ -378,6 +417,9 @@ class Daemon:
         self.es = es or EsApi()
         self.settings = settings
         self.hotkeys = hotkeys
+        self.screen_every = screen_every
+        self.screen_sent = None  # hash of the screenshot on the broker
+        self.screen_error = None  # the last screenshot failure, logged once
         self.game = None      # the session being played, or None
         self.locked = False   # retained by Home Assistant on <base>/lock
         self.stopping = False
@@ -465,6 +507,30 @@ class Daemon:
         self.pub("availability", "online")
         self.pub("version", VERSION)
         self.publish_game()
+
+    def screen(self):
+        """Publish a screenshot if the screen changed, every screen_every s.
+
+        Menus and paused games stay still, so most of these publish nothing.
+        A failure clears the screenshot, not to show a stale one."""
+        self.at("screen", self.screen_every, self.screen)
+        try:
+            jpeg = grab_screen(self.run, self.env)
+        except ScreenError as err:
+            if str(err) != self.screen_error:
+                log.warning("screenshot: %s", err)
+                self.screen_error = str(err)
+            if self.screen_sent is not None:
+                self.pub("screen", "")
+                self.screen_sent = None
+            return
+        if self.screen_error is not None:
+            log.info("screenshots work again")
+            self.screen_error = None
+        digest = hashlib.sha256(jpeg).digest()
+        if digest != self.screen_sent:
+            self.pub("screen", jpeg)
+            self.screen_sent = digest
 
     # --- requests -----------------------------------------------------------
 
@@ -823,6 +889,8 @@ class Daemon:
         sub, sub_at = None, 0.0
         self.publish_all()
         self.at("catalog", 0, self.scheduled_catalog)
+        if self.screen_every > 0:
+            self.at("screen", 0, self.screen)
         try:
             while True:
                 if sub is None and self.now() >= sub_at:
@@ -848,6 +916,7 @@ class Daemon:
             if sub:
                 sub.terminate()
                 sub.wait()
+            self.pub("screen", "")  # the box is going away: no stale screen
             self.pub("state", "off")
             self.pub("availability", "offline")
             fifo.unlink(missing_ok=True)
@@ -861,10 +930,16 @@ def main():
     base = f"{conf.get('topic_prefix', 'batocera')}/{device}"
     env = dict(os.environ, XDG_CONFIG_HOME=str(HOME))
     es = EsApi(os.environ.get("HA_BATOCERA_ES_URL", ES_URL))  # tests use another
+    try:
+        screen_every = float(conf.get("screen_every", SCREEN_EVERY))
+    except ValueError:
+        log.warning("screen_every=%r is not a number, using %d",
+                    conf["screen_every"], SCREEN_EVERY)
+        screen_every = SCREEN_EVERY
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     log.info("starting %s, topics under %s/", VERSION, base)
     try:
-        Daemon(base, env, es=es).serve()
+        Daemon(base, env, es=es, screen_every=screen_every).serve()
     except Exception:
         log.exception("crashed")
         raise

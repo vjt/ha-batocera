@@ -111,6 +111,8 @@ class Box:
         self.started_at: datetime | None = None
         self.cover: bytes | None = None
         self.cover_hash: str | None = None
+        self.screen: bytes | None = None  # a JPEG of what the TV shows
+        self.screen_at: datetime | None = None  # when it arrived
         self.version: str | None = None
         self.game_id: str | None = None
         self.pausable: bool | None = None  # None: not known
@@ -213,6 +215,12 @@ class Box:
         if leaf == "cover":
             self.cover = payload or None
             self.cover_hash = hashlib.sha256(payload).hexdigest()[:16] if payload else None
+            self._update()
+            return
+        if leaf == "screen":
+            # The daemon publishes only changed screenshots.
+            self.screen = payload or None
+            self.screen_at = dt_util.utcnow() if payload else None
             self._update()
             return
         text = payload.decode(errors="replace")

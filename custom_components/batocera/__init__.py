@@ -25,6 +25,7 @@ from .covers import CoverCache
 PLATFORMS = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
+    Platform.IMAGE,
     Platform.MEDIA_PLAYER,
     Platform.NUMBER,
     Platform.SENSOR,

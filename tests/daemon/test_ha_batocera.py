@@ -119,7 +119,7 @@ class Recorder:
         for cmd, data in self.calls:
             if cmd[0] == "mosquitto_pub":
                 topic = cmd[cmd.index("-t") + 1]
-                binary = "/cover" in topic or "/catalog/system/" in topic
+                binary = any(t in topic for t in ("/cover", "/screen", "/catalog/system/"))
                 out.append((topic, data.decode() if data and not binary else data))
         return out
 
@@ -141,6 +141,29 @@ class RealFfmpeg(Recorder):
         if "ffmpeg" in cmd[:4]:
             return subprocess.run(cmd, input=input, **kwargs)
         return super().__call__(cmd, input, **kwargs)
+
+
+class ScreenRecorder(Recorder):
+    """Records like Recorder, plus each command's environment. grim writes a
+    fake PNG of self.frame, ffmpeg a fake JPEG of the PNG it reads; fail names
+    the one that fails."""
+
+    def __init__(self, frame=b"menu", fail=None):
+        super().__init__()
+        self.frame = frame
+        self.fail = fail
+        self.envs = []
+
+    def __call__(self, cmd, input=None, **kwargs):
+        out = super().__call__(cmd, input, **kwargs)
+        self.envs.append(kwargs.get("env"))
+        if self.fail in cmd[:4]:
+            return subprocess.CompletedProcess(cmd, 1, b"", b"failed to create display")
+        if "grim" in cmd[:4]:
+            return subprocess.CompletedProcess(cmd, 0, b"\x89PNG" + self.frame, b"")
+        if "ffmpeg" in cmd[:4]:
+            return subprocess.CompletedProcess(cmd, 0, b"\xff\xd8" + input[4:], b"")
+        return out
 
 
 class Clock:
@@ -248,6 +271,88 @@ class CoverTest(TempDirTest):
     def test_missing_image(self):
         with self.assertLogs(hb.log, "WARNING"):
             self.assertIsNone(hb.make_cover(str(self.tmp / "nope.png")))
+
+
+class ScreenTest(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+
+    def daemon(self, run):
+        return hb.Daemon("batocera/test", {"XDG_CONFIG_HOME": "/x"}, run=run, now=self.clock)
+
+    def screens(self, run):
+        return [p for t, p in run.published() if t == "batocera/test/screen"]
+
+    def test_grim_into_ffmpeg(self):
+        run = ScreenRecorder()
+        self.assertEqual(hb.grab_screen(run, {"XDG_CONFIG_HOME": "/x"}), b"\xff\xd8menu")
+        (grim, _), (ffmpeg, png) = run.calls
+        self.assertEqual(grim[:3], ["nice", "-n", "19"])
+        self.assertEqual(grim[3], "grim")
+        self.assertEqual(ffmpeg[3], "ffmpeg")
+        self.assertEqual(png, b"\x89PNGmenu")
+        # The compositor's defaults, and the rest of the environment.
+        self.assertEqual(run.envs[0], {"WAYLAND_DISPLAY": "wayland-0",
+                                       "XDG_RUNTIME_DIR": "/var/run", "XDG_CONFIG_HOME": "/x"})
+        hb.grab_screen(run, {"WAYLAND_DISPLAY": "wayland-1"})
+        self.assertEqual(run.envs[-1]["WAYLAND_DISPLAY"], "wayland-1")
+
+    def test_grab_errors(self):
+        for fail in ("grim", "ffmpeg"):
+            with self.assertRaisesRegex(hb.ScreenError, f"^{fail}: rc 1 failed to create display"):
+                hb.grab_screen(ScreenRecorder(fail=fail), {})
+
+        def missing(cmd, **kwargs):
+            raise FileNotFoundError(cmd[0])
+        with self.assertRaisesRegex(hb.ScreenError, "^grim: "):
+            hb.grab_screen(missing, {})
+        with self.assertRaisesRegex(hb.ScreenError, "bytes"):
+            hb.grab_screen(ScreenRecorder(frame=b"x" * hb.COVER_MAX), {})
+
+    def test_publishes_only_changes(self):
+        run = ScreenRecorder()
+        d = self.daemon(run)
+        d.screen()
+        self.assertEqual(self.screens(run), [b"\xff\xd8menu"])
+        self.assertEqual(d.timers["screen"][0], self.clock.t + hb.SCREEN_EVERY)
+        d.screen()  # the same menu: nothing to send
+        self.assertEqual(len(self.screens(run)), 1)
+        run.frame = b"game"
+        d.screen()
+        self.assertEqual(self.screens(run), [b"\xff\xd8menu", b"\xff\xd8game"])
+        self.assertIn("-r", run.calls[-1][0])  # retained
+
+    def test_failure_clears_and_warns_once(self):
+        run = ScreenRecorder()
+        d = self.daemon(run)
+        d.screen()
+        run.fail = "grim"
+        with self.assertLogs(hb.log, "INFO") as logs:
+            d.screen()
+            d.screen()
+            run.fail = None
+            d.screen()
+        self.assertEqual(self.screens(run), [b"\xff\xd8menu", None, b"\xff\xd8menu"])
+        self.assertEqual(logs.output, [
+            "WARNING:ha-batocera:screenshot: grim: rc 1 failed to create display",
+            "INFO:ha-batocera:screenshots work again",
+        ])
+        self.assertIn("screen", d.timers)  # it keeps trying
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
+    def test_real_ffmpeg(self):
+        tv = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+                             "testsrc=size=1920x1080", "-frames:v", "1", "-f", "image2pipe",
+                             "-c:v", "png", "-"], capture_output=True, check=True).stdout
+
+        def grim_then_ffmpeg(cmd, input=None, **kwargs):
+            if "grim" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, tv, b"")
+            return subprocess.run(cmd, input=input, **kwargs)
+        jpeg = hb.grab_screen(grim_then_ffmpeg)
+        size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                               "-of", "csv=p=0", "-"], input=jpeg, capture_output=True, check=True)
+        self.assertEqual(size.stdout.decode().strip(), "640,360")
 
 
 class CatalogTest(TempDirTest):
@@ -930,7 +1035,8 @@ class EndToEndTest(TempDirTest):
                            ("mosquitto_sub", FAKE_SUB)):
             (bin_dir / name).write_text(body)
             (bin_dir / name).chmod(0o755)
-        (self.tmp / "ha-batocera.conf").write_text("device=e2e\n")
+        # No screenshots: grim would capture the screen of whoever runs this.
+        (self.tmp / "ha-batocera.conf").write_text("device=e2e\nscreen_every=0\n")
         self.log = self.tmp / "pub.log"
         self.fifo = self.tmp / "events.fifo"
         self.es = FakeEs()
@@ -989,11 +1095,13 @@ class EndToEndTest(TempDirTest):
 
         daemon.send_signal(signal.SIGTERM)
         self.assertEqual(daemon.wait(timeout=10), 0)
-        self.assertEqual(self.published()[-2:], [
+        self.assertEqual(self.published()[-3:], [
+            ("batocera/e2e/screen", "", str(self.tmp)),
             ("batocera/e2e/state", "off", str(self.tmp)),
             ("batocera/e2e/availability", "offline", str(self.tmp)),
         ])
         self.assertFalse(self.fifo.exists())
+        self.assertNotIn("screenshot", (self.tmp / "daemon.log").read_text())  # turned off
 
 
 if __name__ == "__main__":

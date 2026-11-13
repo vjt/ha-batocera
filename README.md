@@ -4,6 +4,7 @@ Connects a [Batocera](https://batocera.org) retro-gaming box to
 [Home Assistant](https://www.home-assistant.io) over MQTT:
 
 - what is being played: game, system, emulator, cover art, since when;
+- what the TV shows, menus included: a screenshot every 15 seconds;
 - how long it was played today;
 - a stop button, which quits the game the way the exit hotkey does, so saves
   are written;
@@ -50,6 +51,11 @@ box's own loopback address only: the browser never talks to the box.
 - The game's name and cover come from the system's `gamelist.xml` (box art,
   falling back to the image), as scraped by EmulationStation. Covers are
   downscaled with `ffmpeg` to at most 512 pixels a side.
+- Every 15 seconds `grim` takes a screenshot from Batocera's Wayland
+  compositor (Batocera 40 and later) and `ffmpeg` scales it down to a
+  640-pixel-wide JPEG, both at the lowest CPU priority; it is published only
+  when the screen changed. `screen_every=<seconds>` in `ha-batocera.conf`
+  changes the interval, `screen_every=0` turns screenshots off.
 - The state is published as retained MQTT messages. A persistent
   `mosquitto_sub` receives commands and holds the MQTT will that marks the box
   offline if the daemon or the network goes away.
@@ -137,7 +143,7 @@ daemon yourself, as root on the box. Either with
 over HTTPS only, and runs the installer from it:
 
 ```sh
-curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.2.0/get.sh && sh /tmp/ha-batocera-get.sh
+curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.3.0/get.sh && sh /tmp/ha-batocera-get.sh
 ```
 
 or by copying the `custom_components/batocera/daemon/` folder to the box and
@@ -218,6 +224,7 @@ For a box named "Arcade":
 | Entity | What |
 |--------|------|
 | `media_player.arcade` | playing / paused / idle / off; title = game, source = system, app = emulator, picture = cover. Browse lists the box's games; play media launches one; pause and play pause and resume it; stop quits it. Attributes: `pausable`, `minutes_left` (while playing; null when nothing limits the time), `catalog` |
+| `image.arcade_screen` | what the TV shows, menus included; updated when the screen changes, checked every 15 seconds; empty when there is no screenshot |
 | `binary_sensor.arcade_playing` | on while a game runs |
 | `sensor.arcade_game`, `sensor.arcade_system` | the running game and system |
 | `sensor.arcade_session_start` | when the running game started |
@@ -330,6 +337,7 @@ All under `batocera/<device>/` (the prefix is set by `topic_prefix` and
 | `emulator` | yes | box | emulator, or `emulator/core` (e.g. `libretro/genesisplusgx`), empty when idle |
 | `started_at` | yes | box | ISO 8601 UTC timestamp of the game start, empty when idle |
 | `cover` | yes | box | raw JPEG bytes (at most 512 px a side, 500 KB), empty when there is none |
+| `screen` | yes | box | raw JPEG bytes, 640 px wide (at most 500 KB): what the TV shows; empty when there is no screenshot or the box shut down |
 | `last_session` | yes | box | JSON: `game`, `system`, `emulator`, `started_at`, `ended_at`, `seconds` |
 | `version` | yes | box | the daemon's version |
 | `game_id` | yes | box | the running game's id in the catalog, empty when idle |
