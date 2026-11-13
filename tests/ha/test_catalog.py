@@ -94,6 +94,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
 
 async def test_logos(hass, mqtt_mock, setup):
     box = setup.runtime_data
+    fire(hass, "availability", "online")  # attributes only while available
     await publish_catalog(hass)
     fire(hass, "catalog/logo/snes", SVG)
     fire(hass, "catalog/logo/megadrive", PNG)
