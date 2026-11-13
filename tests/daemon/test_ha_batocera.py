@@ -119,7 +119,7 @@ class Recorder:
         for cmd, data in self.calls:
             if cmd[0] == "mosquitto_pub":
                 topic = cmd[cmd.index("-t") + 1]
-                binary = any(t in topic for t in ("/cover", "/screen", "/catalog/system/",
+                binary = any(t in topic for t in ("/cover", "/screen", "/live", "/catalog/system/",
                                                   "/catalog/logo/"))
                 out.append((topic, data.decode() if data and not binary else data))
         return out
@@ -354,6 +354,101 @@ class ScreenTest(unittest.TestCase):
         size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
                                "-of", "csv=p=0", "-"], input=jpeg, capture_output=True, check=True)
         self.assertEqual(size.stdout.decode().strip(), "640,360")
+
+
+class LiveTest(unittest.TestCase):
+    """The live screen: big and often, only while Home Assistant says someone
+    watches, never retained."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.run = ScreenRecorder()
+        self.d = hb.Daemon("batocera/test", {}, run=self.run, now=self.clock)
+
+    def lives(self):
+        return [p for t, p in self.run.published() if t == "batocera/test/live"]
+
+    def watch(self, payload):
+        self.d.on_mqtt(f"batocera/test/watch {payload}".rstrip())
+
+    def step(self, seconds):
+        self.clock.t += seconds
+        self.d.run_timers()
+
+    def test_nothing_until_watched(self):
+        self.d.live()
+        self.assertEqual(self.run.calls, [])
+        self.assertNotIn("live", self.d.timers)
+
+    def test_watched_big_often_not_retained(self):
+        self.watch("live")
+        self.assertEqual(self.d.timers["live"][0], self.clock.t)  # the first frame at once
+        self.d.run_timers()
+        self.assertEqual(self.lives(), [b"\xff\xd8menu"])
+        pub = self.run.calls[-1][0]
+        self.assertNotIn("-r", pub)  # gone with the viewer, not left on the broker
+        ffmpeg = next(cmd for cmd, _ in self.run.calls if "ffmpeg" in cmd[:4])
+        self.assertIn(f"scale='min({hb.LIVE_WIDTH},iw)':-2", ffmpeg)
+        self.assertEqual(self.d.timers["live"][0], self.clock.t + hb.LIVE_EVERY)
+        self.assertNotIn("screen", self.d.timers)  # the preview is not touched
+
+    def test_only_changes(self):
+        self.watch("live")
+        self.step(0)
+        self.step(hb.LIVE_EVERY)  # the same menu: nothing to send
+        self.assertEqual(len(self.lives()), 1)
+        self.run.frame = b"game"
+        self.step(hb.LIVE_EVERY)
+        self.assertEqual(self.lives(), [b"\xff\xd8menu", b"\xff\xd8game"])
+
+    def test_lease_runs_out(self):
+        self.watch("live")
+        self.step(0)
+        self.step(hb.LIVE_LEASE - 1)
+        self.assertIn("live", self.d.timers)
+        grabs = len(self.run.calls)
+        self.step(hb.LIVE_LEASE)  # nobody said it again: stop
+        self.assertNotIn("live", self.d.timers)
+        self.assertEqual(len(self.run.calls), grabs)
+
+    def test_renewed_lease_goes_on(self):
+        self.watch("live")
+        self.step(0)
+        self.clock.t += hb.LIVE_LEASE - 10
+        self.watch("live")  # still watched
+        self.assertNotEqual(self.d.timers["live"][0], self.clock.t)  # no extra frame
+        self.step(hb.LIVE_EVERY)
+        self.step(20)
+        self.assertIn("live", self.d.timers)
+
+    def test_off_stops_and_next_watch_sends_again(self):
+        self.watch("live")
+        self.step(0)
+        self.watch("off")
+        self.assertNotIn("live", self.d.timers)
+        self.watch("live")
+        self.step(0)  # the same menu, but a new viewer has not seen it
+        self.assertEqual(self.lives(), [b"\xff\xd8menu", b"\xff\xd8menu"])
+
+    def test_screenshots_off_means_no_live(self):
+        d = hb.Daemon("batocera/test", {}, run=self.run, now=self.clock, screen_every=0)
+        d.on_mqtt("batocera/test/watch live")
+        self.assertNotIn("live", d.timers)
+
+    def test_failure_is_screen_s_to_tell(self):
+        self.run.fail = "grim"
+        self.watch("live")
+        with self.assertNoLogs(hb.log, "WARNING"):
+            self.step(0)
+        self.assertEqual(self.lives(), [])
+        self.assertIn("live", self.d.timers)  # it keeps trying while watched
+
+    def test_subscribes_to_watch(self):
+        with mock.patch.object(hb.subprocess, "Popen") as popen:
+            self.d.spawn_sub()
+        args = popen.call_args.args[0]
+        topics = [args[i + 1] for i, a in enumerate(args) if a == "-t"]
+        self.assertIn("batocera/test/watch", topics)
 
 
 class CatalogTest(TempDirTest):

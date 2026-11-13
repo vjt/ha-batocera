@@ -218,6 +218,52 @@ test("the screen is a preview in the bar; tap opens it, escape or off closes it"
   assert.equal(t.$(".shot img").getAttribute("src"), null);
 });
 
+test("zoomed, the screen is live: a signed stream until it closes", async () => {
+  const shot = (at) => s(at, { entity_picture: "/api/image_proxy/image.arcade_screen?token=k" });
+  const sign = (msg) => Promise.resolve({ path: `${msg.path}?authSig=sig` });
+  const t = await mount(idleStates({ "image.arcade_screen": shot("2026-11-13T17:00:00+00:00") }),
+    { ws: { "auth/sign_path": sign } });
+  const still = t.$(".shot img").getAttribute("src");
+  assert.deepEqual(t.asked("auth/sign_path"), []);  // nobody looks: no stream
+  t.$(".shot").click();
+  assert.equal(t.$(".zoom img").getAttribute("src"), still);  // until the stream is signed
+  await flush();
+  assert.deepEqual(t.asked("auth/sign_path"),
+    [{ type: "auth/sign_path", path: "/api/batocera/e1/live", expires: 60 }]);
+  assert.equal(t.$(".zoom img").getAttribute("src"), "/api/batocera/e1/live?authSig=sig");
+  // A new preview does not cut the stream.
+  await t.set(idleStates({ "image.arcade_screen": shot("2026-11-13T17:00:15+00:00") }));
+  assert.equal(t.$(".zoom img").getAttribute("src"), "/api/batocera/e1/live?authSig=sig");
+  t.$(".zoom").click();  // closed: no src, the browser drops the stream
+  assert.equal(t.$(".zoom img").getAttribute("src"), null);
+  t.$(".shot").click();
+  await flush();
+  assert.equal(t.asked("auth/sign_path").length, 2);  // signed again: it expires
+  // The stream fails: back to the preview.
+  t.$(".zoom img").dispatchEvent(new t.window.Event("error"));
+  assert.equal(t.$(".zoom img").getAttribute("src"), t.$(".shot img").getAttribute("src"));
+  t.card.remove();  // off the page: the stream goes too
+  assert.equal(t.$(".zoom img").getAttribute("src"), null);
+});
+
+test("zoomed, the preview stays when the stream cannot be had", async () => {
+  const shot = s("2026-11-13T17:00:00+00:00", { entity_picture: "/api/image_proxy/image.arcade_screen?token=k" });
+  const t = await mount(idleStates({ "image.arcade_screen": shot }));  // sign_path refused
+  t.$(".shot").click();
+  await flush();
+  assert.equal(t.asked("auth/sign_path").length, 1);
+  assert.equal(t.$(".zoom img").getAttribute("src"), t.$(".shot img").getAttribute("src"));
+  // Closed before the answer came: no stream is opened late.
+  let answer;
+  const late = await mount(idleStates({ "image.arcade_screen": shot }),
+    { ws: { "auth/sign_path": () => new Promise((resolve) => { answer = resolve; }) } });
+  late.$(".shot").click();
+  late.$(".zoom").click();
+  answer({ path: "/api/batocera/e1/live?authSig=late" });
+  await flush();
+  assert.equal(late.$(".zoom img").getAttribute("src"), null);
+});
+
 test("offline and locked banners", async () => {
   const t = await mount(idleStates({ "media_player.arcade": s("unavailable") }));
   assert.equal(t.text(".banner .big"), "OFFLINE");
