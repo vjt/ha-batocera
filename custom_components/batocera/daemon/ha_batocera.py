@@ -776,7 +776,10 @@ class Daemon:
             self.pub("public_web_access", value)
 
     def scheduled_catalog(self):
-        if self.game:  # leave EmulationStation alone during a game
+        # Leave EmulationStation alone during a game, unless there is no
+        # catalog yet (started during a game): without it, every cover and
+        # launch request names an unknown game.
+        if self.game and self.catalog:
             self.at("catalog", CATALOG_EVERY, self.scheduled_catalog)
         else:
             self.refresh_catalog()

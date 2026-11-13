@@ -589,6 +589,16 @@ class CatalogDaemonTest(unittest.TestCase):
         self.assertEqual(self.fake.requests, [])
         self.assertEqual(self.d.timers["catalog"][0], self.clock.t + hb.CATALOG_EVERY)
 
+    def test_first_catalog_is_read_during_a_game(self):
+        # Started during a game (adopted): without a catalog every cover
+        # and launch request is an unknown game until the game ends.
+        self.d.game = {"system": "snes"}
+        self.d.at("catalog", 0, self.d.scheduled_catalog)
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.run_timers()
+        self.assertEqual(list(self.d.catalog), ["megadrive", "snes"])
+        self.assertTrue(self.d.roms)
+
     def test_cleared_retained_index_is_no_news(self):
         self.d.on_mqtt("batocera/test/catalog/index ")  # no warning
         self.assertIsNone(self.d.index_sent)
