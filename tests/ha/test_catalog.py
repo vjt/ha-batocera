@@ -11,7 +11,7 @@ import time
 import pytest
 from pytest_homeassistant_custom_component.common import async_fire_mqtt_message
 
-from custom_components.batocera.box import LOGO_MAX, BoxError, logo_type
+from custom_components.batocera.box import LOGO_MAX, BoxError, Game, logo_type
 
 from conftest import BARE, INDEX, MARIO, ROWS, SONIC, SOR, TOPIC, publish_catalog
 
@@ -207,6 +207,115 @@ async def test_browse(hass, mqtt_mock, setup, hass_ws_client):
     assert children(await browse(hass, client, "fav:snes")) == []
     for bad in ("system:nes", "system:", "game:snes:" + MARIO, "whatever"):
         assert (await browse(hass, client, bad))["success"] is False
+
+
+def gid(n):
+    return f"{n:012x}"
+
+
+MAME_INDEX = [{"name": "mame", "fullname": "Arcade", "manufacturer": "", "year": None,
+               "count": 6, "hash": "cccccccccccc"}]
+MAME_ROWS = [  # as the daemon sends them: by name
+    [gid(1), "1942", 1984, "", "", 0, 0, "", "Shooter - Vertical"],
+    [gid(2), "Galaxian", 1979, "", "", 0, 0, "", ""],
+    [gid(3), "Killer Instinct", 1994, "", "", 1, 0, "", "Fighter"],
+    [gid(4), "Pac-Land Demo", None, "", "", 0, 0, "", "Extra/Demos"],
+    [gid(5), "Quiz Show", None, "", "", 0, 0, "", "Quiz: Trivia"],
+    [gid(6), "Street Fighter II", 1991, "", "", 0, 0, "", "Fighter"],
+]
+
+
+async def publish_with_mame(hass):
+    await publish_catalog(hass, index=INDEX + MAME_INDEX, rows={**ROWS, "mame": MAME_ROWS})
+
+
+async def test_browse_subfolders(hass, mqtt_mock, setup, hass_ws_client):
+    await publish_with_mame(hass)
+    client = await hass_ws_client(hass)
+    result = (await browse(hass, client, "system:mame"))["result"]
+    assert result["title"] == "Arcade"
+    assert children({"result": result}) == [  # folders first, then the games at the top
+        ("dir:mame:Extra", "Extra"), ("dir:mame:Fighter", "Fighter"),
+        ("dir:mame:Quiz: Trivia", "Quiz: Trivia"),
+        ("dir:mame:Shooter - Vertical", "Shooter - Vertical"),
+        (f"game:mame:{gid(2)}", "Galaxian"),
+    ]
+    extra = result["children"][0]
+    assert (extra["can_expand"], extra["can_play"], extra["media_class"]) == (True, False, "directory")
+    assert children(await browse(hass, client, "dir:mame:Extra")) == [
+        ("dir:mame:Extra/Demos", "Demos")
+    ]
+    demos = (await browse(hass, client, "dir:mame:Extra/Demos"))["result"]
+    assert demos["title"] == "Demos"
+    assert children({"result": demos}) == [(f"game:mame:{gid(4)}", "Pac-Land Demo")]
+    assert children(await browse(hass, client, "dir:mame:Fighter")) == [
+        (f"game:mame:{gid(3)}", "Killer Instinct"), (f"game:mame:{gid(6)}", "Street Fighter II")
+    ]
+    assert children(await browse(hass, client, "dir:mame:Quiz: Trivia")) == [
+        (f"game:mame:{gid(5)}", "Quiz Show")
+    ]
+    assert children(await browse(hass, client, "dir:mame:Shooter - Vertical")) == [
+        (f"game:mame:{gid(1)}", "1942")
+    ]
+    for bad in ("dir:mame:Nope", "dir:mame:Fight", "dir:mame:", "dir:mame", "dir:nes:Fighter"):
+        assert (await browse(hass, client, bad))["success"] is False, bad
+    # Favourites and recently played stay flat, across folders.
+    assert children(await browse(hass, client, "fav:mame")) == [
+        (f"game:mame:{gid(3)}", "Killer Instinct")
+    ]
+    # Systems without folders are as they were.
+    assert [t for _, t in children(await browse(hass, client, "system:megadrive"))] == [
+        "Bare", "Sonic the Hedgehog", "Streets of Rage"
+    ]
+
+
+def test_search_everywhere():
+    from custom_components.batocera.browse import SEARCH_MAX, search
+
+    class FakeBox:
+        name = "Arcade"
+
+    box = FakeBox()
+    games = [
+        Game(gid(1), "snes", "Pokémon Crystal", None, "", "", False, True, 0, "", ""),
+        Game(gid(2), "mame", "POKEMON Battle", None, "", "", False, False, 0, "", "Quiz"),
+        Game(gid(3), "mame", "Pac-Man", None, "", "", False, False, 0, "", ""),
+    ]
+    box.games = {g.id: g for g in games}
+    url = lambda cid: f"/img/{cid}"  # noqa: E731
+    found = search(box, "  pokemon ", url)
+    assert [(r.title, r.media_content_id) for r in found] == [  # by name, accents folded
+        ("POKEMON Battle", f"game:mame:{gid(2)}"), ("Pokémon Crystal", f"game:snes:{gid(1)}")
+    ]
+    assert found[1].thumbnail == f"/img/game:snes:{gid(1)}" and found[0].thumbnail is None
+    assert found[0].can_play and not found[0].can_expand
+    assert search(box, "  ", url) == []
+    assert search(box, "", url) == []
+    assert [r.title for r in search(box, "P", url, system="mame")] == ["Pac-Man", "POKEMON Battle"]
+    assert search(box, "pokemon", url, system="nes") == []
+    box.games = {gid(n): Game(gid(n), "snes", f"Game {n:03}", None, "", "", False, False, 0, "", "")
+                 for n in range(250)}
+    many = search(box, "game", url)
+    assert len(many) == SEARCH_MAX == 200
+    assert many[0].title == "Game 000" and many[-1].title == "Game 199"
+
+
+async def test_system_logo_image(hass, mqtt_mock, setup, hass_ws_client, hass_client):
+    await publish_catalog(hass)
+    fire(hass, "catalog/logo/snes", SVG)
+    await hass.async_block_till_done()
+    root = (await browse(hass, await hass_ws_client(hass)))["result"]["children"]
+    megadrive, snes = root[2], root[3]
+    assert megadrive["thumbnail"] is None  # no logo: no thumbnail
+    assert snes["thumbnail"].startswith(
+        "/api/media_player_proxy/media_player.arcade/browse_media/game/system:snes?token="
+    )
+    client = await hass_client()
+    response = await client.get(snes["thumbnail"])
+    assert response.status == 200
+    assert response.content_type == "image/svg+xml"
+    assert await response.read() == SVG
+    assert (await client.get(snes["thumbnail"].replace("snes", "megadrive"))).status == 404
 
 
 async def test_running_game_has_a_content_id(hass, mqtt_mock, setup):

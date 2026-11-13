@@ -11,14 +11,16 @@ from homeassistant.components.media_player import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
     MediaType,
+    SearchMedia,
+    SearchMediaQuery,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import BatoceraConfigEntry
-from .box import BoxError
-from .browse import browse, parse_game
+from .box import BoxError, logo_type
+from .browse import browse, parse_game, search, search_scope
 from .const import DOMAIN
 from .entity import LiveEntity
 
@@ -54,6 +56,7 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
             MediaPlayerEntityFeature.STOP
             | MediaPlayerEntityFeature.BROWSE_MEDIA
             | MediaPlayerEntityFeature.PLAY_MEDIA
+            | MediaPlayerEntityFeature.SEARCH_MEDIA
         )
         # Pause unless the running emulator is known to have no pause
         # hotkey: when the box cannot tell, trying is the only way to know.
@@ -110,15 +113,22 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
     async def async_browse_media(
         self, media_content_type: str | None = None, media_content_id: str | None = None
     ) -> BrowseMedia:
-        return browse(
-            self.box,
-            media_content_id,
-            lambda cid: self.get_browse_image_url(MediaType.GAME, cid),
-        )
+        return browse(self.box, media_content_id, self._image_url)
+
+    async def async_search_media(self, query: SearchMediaQuery) -> SearchMedia:
+        """Games by name, of the system the search starts from, or of all."""
+        system = search_scope(query.media_content_id)
+        return SearchMedia(result=search(self.box, query.search_query, self._image_url, system))
+
+    def _image_url(self, content_id: str) -> str:
+        return self.get_browse_image_url(MediaType.GAME, content_id)
 
     async def async_get_browse_image(
         self, media_content_type: str, media_content_id: str, media_image_id: str | None = None
     ) -> tuple[bytes | None, str | None]:
+        if media_content_id.startswith("system:"):
+            logo = self.box.logos.get(media_content_id.removeprefix("system:"))
+            return (logo, logo_type(logo)) if logo else (None, None)
         game = parse_game(self.box, media_content_id)
         jpeg = await self.box.covers.async_get(game) if game else None
         return (jpeg, "image/jpeg") if jpeg else (None, None)

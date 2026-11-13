@@ -163,6 +163,36 @@ async def test_screen(hass, mqtt_mock, setup, hass_client, freezer):
     assert hass.states.get("image.arcade_screen").state == STATE_UNKNOWN
 
 
+async def test_search_feature(hass, mqtt_mock, setup, hass_ws_client):
+    from homeassistant.components.media_player import MediaPlayerEntityFeature
+
+    from conftest import publish_catalog
+
+    fire(hass, "availability", "online")
+    fire(hass, "state", "idle")
+    await publish_catalog(hass)
+    features = hass.states.get("media_player.arcade").attributes["supported_features"]
+    assert features & MediaPlayerEntityFeature.SEARCH_MEDIA
+    client = await hass_ws_client(hass)
+
+    async def search(query, **scope):
+        await client.send_json_auto_id({"type": "media_player/search_media",
+                                        "entity_id": "media_player.arcade",
+                                        "search_query": query, **scope})
+        msg = await client.receive_json()
+        assert msg["success"], msg
+        return [c["title"] for c in msg["result"]["result"]]
+
+    assert await search("s") == ["Sonic the Hedgehog", "Streets of Rage", "Super Mario World"]
+    snes = {"media_content_type": "directory", "media_content_id": "system:snes"}
+    assert await search("s", **snes) == ["Super Mario World"]
+    for cid in ("dir:megadrive:Platform", "fav:megadrive", "recent:megadrive"):
+        scope = {"media_content_type": "directory", "media_content_id": cid}
+        assert await search("s", **scope) == ["Sonic the Hedgehog", "Streets of Rage"], cid
+    root = {"media_content_type": "directory", "media_content_id": "fav"}  # all systems
+    assert await search("mario", **root) == ["Super Mario World"]
+
+
 async def test_stop(hass, mqtt_mock, setup):
     await play(hass)
     mqtt_mock.async_publish.reset_mock()
