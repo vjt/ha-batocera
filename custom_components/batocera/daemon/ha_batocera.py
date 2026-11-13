@@ -57,6 +57,7 @@ LOGO_MAX = 256 * 1024   # never publish a bigger system logo
 LOGO_UNKNOWN = "?"  # a logo an earlier run may have left on the broker
 CATALOG_EVERY = 30 * 60  # seconds between catalog reads while no game runs
 CATALOG_RETRY = 30      # seconds before asking EmulationStation again
+INDEX_WAIT = 3          # seconds the first catalog read waits for an earlier run's index
 CATALOG_AFTER_GAME = 10  # seconds after a game, for its play count to be saved
 LAUNCH_IDLE_WAIT = 10   # seconds for EmulationStation to be idle before a launch
 LAUNCH_POLL = 1         # seconds between asks whether it is
@@ -285,15 +286,23 @@ def rom_folder(path, roms=ROMS):
     return "/".join(parts[len(top) + 1:-1])
 
 
-# An SVG: <svg> first, after an XML declaration, comments, a DOCTYPE.
-SVG_START = re.compile(rb"(?:\s+|<\?xml[^>]*>|<!--.*?-->|<!DOCTYPE[^>\[]*>)*<svg[\s/>]", re.S | re.I)
+# What may come before <svg>: blanks, an XML declaration, comments, a DOCTYPE
+# (with its own entities, as Illustrator writes it). Skipped one piece at a
+# time: one pattern repeating them all backtracks for ages on what is no SVG.
+SVG_PROLOGUE = re.compile(rb"\s+|<\?xml[^>]*>|<!--.*?-->|<!DOCTYPE[^>\[]*(?:\[[^\]]*\][^>]*)?>",
+                          re.S | re.I)
+SVG_TAG = re.compile(rb"<svg[\s/>]", re.I)
 
 
 def image_type(data):
     """The media type of a logo's bytes: SVG, PNG or JPEG, else None."""
-    head = data[:4096].removeprefix(b"\xef\xbb\xbf").lstrip()
-    if SVG_START.match(head):
+    head = data[:4096].removeprefix(b"\xef\xbb\xbf")
+    pos = 0
+    while found := SVG_PROLOGUE.match(head, pos):
+        pos = found.end()
+    if SVG_TAG.match(head, pos):
         return "image/svg+xml"
+    head = head.lstrip()
     if head.startswith(b"\x89PNG"):
         return "image/png"
     if data.startswith(b"\xff\xd8"):
@@ -989,6 +998,7 @@ class Daemon:
                     log.warning("retained catalog index: %s", err)
                 else:
                     self.index_sent = payload
+                    self.at("catalog", 0, self.scheduled_catalog)  # no need to wait more
         elif leaf == "availability" and payload != "online" and not self.stopping:
             # Our will fired (connection dropped) or a stale "offline" was
             # retained: we are alive, say so again.
@@ -1013,6 +1023,16 @@ class Daemon:
              "-t", f"{self.base}/catalog/index"],
             stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, env=self.env)
 
+    def start(self):
+        """What serve() does first. The catalog waits a moment: mosquitto_sub
+        hands back the index an earlier run left, and with it what is on the
+        broker, so the first read leaves nothing behind (see on_mqtt)."""
+        self.adopt()  # first: never say "idle" over a running game
+        self.publish_all()
+        self.at("catalog", INDEX_WAIT, self.scheduled_catalog)
+        if self.screen_every > 0:
+            self.at("screen", 0, self.screen)
+
     def serve(self, fifo=FIFO):
         if fifo.exists() or fifo.is_symlink():
             fifo.unlink()
@@ -1023,11 +1043,7 @@ class Daemon:
         sel.register(fifo_fd, selectors.EVENT_READ, self.on_line)
         bufs = {fifo_fd: b""}
         sub, sub_at = None, 0.0
-        self.adopt()  # first: never say "idle" over a running game
-        self.publish_all()
-        self.at("catalog", 0, self.scheduled_catalog)
-        if self.screen_every > 0:
-            self.at("screen", 0, self.screen)
+        self.start()
         try:
             while True:
                 if sub is None and self.now() >= sub_at:

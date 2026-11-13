@@ -64,18 +64,32 @@ class Game(NamedTuple):
     folder: str  # under the system's ROM folder: "Fighter", "Extra/Demos", or ""
 
 
-# An SVG: <svg> first, after an XML declaration, comments, a DOCTYPE.
-SVG_START = re.compile(
-    rb"(?:\s+|<\?xml[^>]*>|<!--.*?-->|<!DOCTYPE[^>\[]*>)*<svg[\s/>]", re.S | re.I
+# What may come before <svg>: blanks, an XML declaration, comments, a DOCTYPE
+# (with its own entities, as Illustrator writes it). Skipped one piece at a
+# time: one pattern repeating them all backtracks for ages on what is no SVG,
+# and logos are told apart in Home Assistant's event loop.
+SVG_PROLOGUE = re.compile(
+    rb"\s+|<\?xml[^>]*>|<!--.*?-->|<!DOCTYPE[^>\[]*(?:\[[^\]]*\][^>]*)?>", re.S | re.I
 )
 SVG_TAG = re.compile(rb"<svg[\s/>][^>]*>?", re.I)
+SVG_HEAD = 4096  # the prologue fits in this much, or it is no SVG
 SVG_SIDE_MAX = 100_000.0  # a logo bigger than this, or not saying, is 300 x 150
+
+
+def svg_tag(data: bytes) -> bytes | None:
+    """The <svg ...> tag that starts an SVG, None when the bytes are not one."""
+    head = data[:SVG_HEAD].removeprefix(b"\xef\xbb\xbf")
+    pos = 0
+    while found := SVG_PROLOGUE.match(head, pos):
+        pos = found.end()
+    tag = SVG_TAG.match(head, pos)
+    return tag.group(0) if tag else None
 
 
 def logo_type(data: bytes) -> str | None:
     """The media type of a system logo's bytes: SVG, PNG or JPEG, else None."""
     head = data[:4096].removeprefix(b"\xef\xbb\xbf").lstrip()
-    if SVG_START.match(head):
+    if svg_tag(data) is not None:
         return "image/svg+xml"
     if head.startswith(b"\x89PNG"):
         return "image/png"
@@ -85,8 +99,8 @@ def logo_type(data: bytes) -> str | None:
 
 
 def _svg_size(tag: bytes) -> tuple[float, float]:
-    """Width and height of an SVG from its <svg> tag: the viewBox, else
-    width and height in px; 300 x 150 (what browsers use) when neither says."""
+    """Width and height of an SVG from its <svg> tag, as browsers size it:
+    width and height in px, else the viewBox; 300 x 150 when neither says."""
 
     def attr(name: bytes) -> str:
         found = re.search(rb"\s" + name + rb"""\s*=\s*["']([^"']*)["']""", tag)
@@ -99,10 +113,10 @@ def _svg_size(tag: bytes) -> tuple[float, float]:
             return None
         return value if 0 < value <= SVG_SIDE_MAX else None
 
+    if (w := side(attr(b"width"))) and (h := side(attr(b"height"))):
+        return w, h
     box = re.split(r"[\s,]+", attr(b"viewBox"))
     if len(box) == 4 and (w := side(box[2])) and (h := side(box[3])):
-        return w, h
-    if (w := side(attr(b"width"))) and (h := side(attr(b"height"))):
         return w, h
     return 300.0, 150.0
 
@@ -117,8 +131,7 @@ def contained_logo(data: bytes) -> bytes | None:
     kind = logo_type(data)
     if kind != "image/svg+xml":
         return data if kind else None
-    tag = SVG_TAG.search(data[:8192])
-    w, h = _svg_size(tag.group(0) if tag else b"")
+    w, h = _svg_size(svg_tag(data) or b"")
     href = "data:image/svg+xml;base64," + base64.b64encode(data).decode("ascii")
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:g}" height="{h:g}" '

@@ -92,6 +92,13 @@ const split = (id) => {
   const at = id.indexOf(":");
   return at < 0 ? [id, ""] : [id.slice(0, at), id.slice(at + 1)];
 };
+// A cover's URL without the user's token, which changes on its own: what is
+// left (media_image_id) names the picture.
+const coverKey = (url) => {
+  const [path, query = ""] = url.split("?");
+  const kept = query.split("&").filter((p) => p && !p.startsWith("token="));
+  return kept.length ? `${path}?${kept.join("&")}` : path;
+};
 
 // The pixel font, bundled with the integration (OFL, see fonts/OFL.txt). It
 // is declared on the page: a @font-face inside a shadow root is ignored.
@@ -674,7 +681,7 @@ class BatoceraCard extends HTMLElement {
   // a few at a time, once each, and only for tiles in sight when the
   // browser can tell.
   _cover(art, img, url, lazy = true) {
-    const key = url.split("?")[0];
+    const key = coverKey(url);
     const known = this._blobs.get(key);
     if (known) {
       img.src = known;
@@ -721,6 +728,14 @@ class BatoceraCard extends HTMLElement {
         .then((blob) => {
           if (!blob) throw new Error("no cover");
           const src = URL.createObjectURL(blob);
+          // The picture this one replaces (a system's new logo) goes.
+          const path = job.key.split("?")[0];
+          for (const [key, old] of this._blobs) {
+            if (key !== job.key && key.split("?")[0] === path) {
+              URL.revokeObjectURL(old);
+              this._blobs.delete(key);
+            }
+          }
           this._blobs.set(job.key, src);
           job.img.src = src;
           job.art.classList.add("loaded");
