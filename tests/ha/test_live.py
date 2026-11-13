@@ -5,6 +5,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from homeassistant.const import EVENT_STATE_CHANGED, STATE_UNKNOWN
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     async_capture_events,
     async_fire_mqtt_message,
@@ -26,9 +27,9 @@ def published(mqtt_mock):
     return [(c.args[0], c.args[1], c.args[3]) for c in mqtt_mock.async_publish.call_args_list]
 
 
-async def advance(hass, freezer, **delta):
-    freezer.tick(timedelta(**delta))
-    async_fire_time_changed(hass)
+async def advance(hass, **delta):
+    # HA's timers only: a frozen clock would freeze the stream's own waits.
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(**delta))
     await hass.async_block_till_done()
 
 
@@ -69,7 +70,7 @@ async def test_live_frames_touch_no_entity(hass, mqtt_mock, setup):
     assert hass.states.get("image.arcade_screen").state == STATE_UNKNOWN
 
 
-async def test_stream_while_watched(hass, mqtt_mock, setup, hass_client, freezer):
+async def test_stream_while_watched(hass, mqtt_mock, setup, hass_client):
     client = await hass_client()
     response = await client.get(f"/api/batocera/{setup.entry_id}/live")
     assert response.status == 200
@@ -85,12 +86,12 @@ async def test_stream_while_watched(hass, mqtt_mock, setup, hass_client, freezer
     # who left is noticed.
     assert await next_frame(response) == b"\xff\xd8 two"
 
-    await advance(hass, freezer, seconds=20)
+    await advance(hass, seconds=20)
     assert watches(mqtt_mock) == ["live", "live"]  # renewed while watched
 
     response.close()
     await until(lambda: watches(mqtt_mock) == ["live", "live", "off"])
-    await advance(hass, freezer, seconds=60)
+    await advance(hass, seconds=60)
     assert watches(mqtt_mock) == ["live", "live", "off"]  # no renewal after
 
 
@@ -134,14 +135,14 @@ async def test_needs_auth(hass, mqtt_mock, setup, hass_client_no_auth):
     assert watches(mqtt_mock) == []
 
 
-async def test_unload_stops_renewing(hass, mqtt_mock, setup, hass_client, freezer):
+async def test_unload_stops_renewing(hass, mqtt_mock, setup, hass_client):
     client = await hass_client()
     response = await client.get(f"/api/batocera/{setup.entry_id}/live")
     await until(lambda: watches(mqtt_mock) == ["live"])
     assert await hass.config_entries.async_unload(setup.entry_id)
     await hass.async_block_till_done()
     response.close()
-    await advance(hass, freezer, seconds=60)
+    await advance(hass, seconds=60)
     assert watches(mqtt_mock).count("live") == 1
     fire(hass, "live", b"\xff\xd8 late")  # nobody listens: no error
     await hass.async_block_till_done()
