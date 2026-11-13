@@ -46,6 +46,7 @@ async def async_setup_entry(
 
 class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
     _attr_media_content_type = MediaType.GAME
+    _attr_icon = "mdi:nintendo-game-boy"
 
     @property
     def supported_features(self) -> MediaPlayerEntityFeature:
