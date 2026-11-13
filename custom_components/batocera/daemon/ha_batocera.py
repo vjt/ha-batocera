@@ -201,6 +201,18 @@ def pausable_from(text):
     return "pause" in keys if isinstance(keys, dict) else None
 
 
+def emulator_from(text):
+    """The emulator hotkeygen's context is named after, "" if unreadable.
+
+    It is the emulator's own name: "retroarch" for every libretro core.
+    """
+    try:
+        name = json.loads(text).get("name")
+    except (ValueError, AttributeError):
+        return ""
+    return name if isinstance(name, str) else ""
+
+
 def on_off(value):
     """ON, OFF or empty (not known) for a retained flag."""
     return {True: "ON", False: "OFF"}.get(value, "")
@@ -387,6 +399,38 @@ def starttime(pid):
     except OSError:
         return None
     return stat.rsplit(")", 1)[1].split()[19]  # field 22
+
+
+def started_at(pid):
+    """When a process started, in seconds since the epoch; None if it is gone."""
+    ticks = starttime(pid)
+    if ticks is None:
+        return None
+    for line in Path("/proc/stat").read_text().splitlines():
+        if line.startswith("btime "):
+            return int(line.split()[1]) + int(ticks) / os.sysconf("SC_CLK_TCK")
+    return None
+
+
+def running_launcher():
+    """The launcher of a game that is running: (pid, system, rom), or None.
+
+    Read from emulatorlauncher's command line, "python emulatorlauncher
+    -system <system> -rom <rom> ...", not from a log that may be a launch old.
+    """
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            argv = entry.joinpath("cmdline").read_bytes().decode(errors="replace").split("\0")
+        except OSError:
+            continue
+        if not any(Path(arg).name == "emulatorlauncher" for arg in argv[:2]):
+            continue
+        opts = dict(zip(argv, argv[1:]))  # each argument -> the one after it
+        if opts.get("-system") and opts.get("-rom"):
+            return int(entry.name), opts["-system"], opts["-rom"]
+    return None
 
 
 def descendants(pid):
@@ -755,7 +799,7 @@ class Daemon:
         else:
             log.warning("bad hook line: %r", line)
 
-    def start(self, pid, system, emulator, core, rom):
+    def start(self, pid, system, emulator, core, rom, started=None):
         if self.game:
             log.info("%s never ended", self.game["name"])
             self.end()
@@ -770,7 +814,7 @@ class Daemon:
             "id": game_id(rom),
             "system": system,
             "emulator": emulator if core in ("", emulator) else f"{emulator}/{core}",
-            "started": self.now(),
+            "started": self.now() if started is None else started,
             "cover": make_cover(image, self.run) if image else None,
             "pausable": None,  # not known until the launcher sets the hotkeys
             "paused": False,
@@ -782,6 +826,25 @@ class Daemon:
             # The hook cannot refuse a launch: its exit code is ignored.
             log.info("locked: stopping %s", name)
             self.stop()
+
+    def adopt(self):
+        """Report a game launched before the daemon started, as after an
+        upgrade mid-game: its hook went to the previous daemon, or nowhere.
+
+        The session counts from the launcher's start: Home Assistant counts a
+        running session only while it is reported, and its end only from
+        last_session, so the time before the restart was not counted yet.
+        """
+        found = running_launcher()
+        if not found:
+            return
+        pid, system, rom = found
+        try:
+            emulator = emulator_from(self.hotkeys.read_text())
+        except OSError:
+            emulator = ""
+        log.info("launcher %d was already running", pid)
+        self.start(pid, system, emulator, "", rom, started=started_at(pid))
 
     def end(self):
         g, self.game = self.game, None
@@ -887,6 +950,7 @@ class Daemon:
         sel.register(fifo_fd, selectors.EVENT_READ, self.on_line)
         bufs = {fifo_fd: b""}
         sub, sub_at = None, 0.0
+        self.adopt()  # first: never say "idle" over a running game
         self.publish_all()
         self.at("catalog", 0, self.scheduled_catalog)
         if self.screen_every > 0:

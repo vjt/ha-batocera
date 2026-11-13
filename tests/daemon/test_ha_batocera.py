@@ -933,6 +933,53 @@ class DaemonTest(TempDirTest):
         self.assertIn("Bare never ended", "\n".join(logs.output))
         self.assertEqual(sum(t.endswith("/last_session") for t, _ in self.run.published()), 1)
 
+    def fake_launcher(self, *args):
+        """A process with emulatorlauncher's command line, as Batocera runs it."""
+        script = self.tmp / "emulatorlauncher"
+        script.write_text("import time\ntime.sleep(60)\n")
+        launcher = subprocess.Popen([sys.executable, str(script), *args])
+        self.addCleanup(launcher.wait)
+        self.addCleanup(launcher.kill)
+        return launcher
+
+    def test_adopts_a_game_already_running(self):
+        launcher = self.fake_launcher("-p1name", "DualSense Wireless Controller",
+                                      "-system", "megadrive", "-rom", self.rom,
+                                      "-gameinfoxml", "/tmp/game.xml")
+        self.d.hotkeys = self.tmp / "hotkeygen.context"
+        self.d.hotkeys.write_text('{"name": "retroarch", "keys": {"exit": "KEY_F4"}}')
+        with self.assertLogs(hb.log, "INFO") as logs:
+            self.d.adopt()
+        self.assertIn(f"launcher {launcher.pid} was already running", "\n".join(logs.output))
+        published = self.run.published()
+        self.assertIn(("batocera/test/game", "Bare"), published)
+        self.assertIn(("batocera/test/system", "megadrive"), published)
+        self.assertIn(("batocera/test/emulator", "retroarch"), published)
+        self.assertEqual(published[-1], ("batocera/test/state", "playing"))
+        self.assertEqual(self.d.game["pid"], launcher.pid)
+        # From the launcher's start, in real time: not from the fake clock.
+        self.assertLess(abs(self.d.game["started"] - time.time()), 5)
+        self.d.tick()  # the launcher is alive: the session stays
+        self.assertIsNotNone(self.d.game)
+
+    def test_adopt_without_hotkeys_context(self):
+        self.fake_launcher("-system", "megadrive", "-rom", self.rom)
+        self.d.hotkeys = self.tmp / "missing"
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.adopt()
+        self.assertIn(("batocera/test/emulator", None), self.run.published())
+
+    def test_nothing_to_adopt(self):
+        self.fake_launcher("-system", "megadrive")  # no ROM: not a game
+        self.d.adopt()
+        self.assertEqual(self.run.calls, [])
+        self.assertIsNone(self.d.game)
+
+    def test_emulator_from(self):
+        self.assertEqual(hb.emulator_from('{"name": "cemu", "keys": {}}'), "cemu")
+        for text in ("not json", "[1]", '{"keys": {}}', '{"name": 3}'):
+            self.assertEqual(hb.emulator_from(text), "", text)
+
     def test_lost_launcher_ends_session(self):
         child = subprocess.Popen(["true"])
         child.wait()  # reaped: its pid is gone
@@ -1102,6 +1149,22 @@ class EndToEndTest(TempDirTest):
         ])
         self.assertFalse(self.fifo.exists())
         self.assertNotIn("screenshot", (self.tmp / "daemon.log").read_text())  # turned off
+
+    def test_daemon_started_during_a_game(self):
+        script = self.tmp / "emulatorlauncher"
+        script.write_text("import time\ntime.sleep(60)\n")
+        launcher = subprocess.Popen([sys.executable, str(script), "-system", "snes",
+                                     "-rom", "/userdata/roms/snes/Mario World.sfc"])
+        self.addCleanup(launcher.wait)
+        self.addCleanup(launcher.kill)
+        daemon = subprocess.Popen([sys.executable, str(DAEMON / "ha_batocera.py")],
+                                  env=self.env)
+        self.addCleanup(daemon.kill)
+        self.wait_for(lambda p: ("batocera/e2e/state", "playing", str(self.tmp)) in p)
+        published = self.published()
+        self.assertIn(("batocera/e2e/game", "Mario World", str(self.tmp)), published)
+        # Never "idle" first: that would end a session that is still going.
+        self.assertNotIn(("batocera/e2e/state", "idle", str(self.tmp)), published)
 
 
 if __name__ == "__main__":

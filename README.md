@@ -429,8 +429,10 @@ daemon's belief, not a measurement.
   EmulationStation's notifications are not known to show over a running
   emulator; RetroArch's network commands might work for libretro cores. Not
   explored.
-- **Daemon restarted during a game.** The daemon does not look for a game that
-  was already running when it started; that session is not reported.
+- **Daemon restarted during a game.** A game already running when the daemon
+  starts is found from the launcher's command line, and its session counts
+  from the launcher's start. The emulator is then the one hotkeygen names
+  (`retroarch` for any libretro core), without the core.
 - **Gamelists in other places.** Only the `gamelist.xml` next to the ROMs, or
   in a folder above them up to `/userdata/roms`, is read. Without one, the
   game name is the ROM file name and there is no cover.
