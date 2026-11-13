@@ -244,7 +244,8 @@ Playtime and limits are kept by Home Assistant and stay available.
 The integration adds a **Batocera** page to the sidebar, with one tab per box.
 At the top, what is playing: cover, name, system, time played, and the time
 left before the daily limit or the end of the window (or FREE PLAY), with
-pause and a two-tap kill. Below, the box's games: favourites, recently played
+pause and a two-tap kill. Under it, what the TV shows (the latest screenshot,
+menus too) while the box is on. Below, the box's games: favourites, recently played
 and one folder per system, with a search. Tap a game, then PRESS START: the
 running game is quit and the new one launched.
 

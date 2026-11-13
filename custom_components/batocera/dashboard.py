@@ -39,6 +39,7 @@ ROLES = {
     "started": ("sensor", "started_at"),
     "limit": ("number", "daily_limit"),
     "manual": ("switch", "manual_lock"),
+    "screen": ("image", "screen"),
 }
 
 

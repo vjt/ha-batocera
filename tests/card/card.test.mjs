@@ -15,6 +15,7 @@ const ENTITIES = {
   player: "media_player.arcade", locked: "binary_sensor.arcade_locked",
   playtime: "sensor.arcade_playtime_today", started: "sensor.arcade_session_start",
   limit: "number.arcade_daily_limit", manual: "switch.arcade_manual_lock",
+  screen: "image.arcade_screen",
 };
 const s = (state, attributes = {}) => ({ state, attributes, last_changed: new Date().toISOString() });
 
@@ -159,6 +160,25 @@ test("no limit: free play", async () => {
 test("the last minutes are flagged", async () => {
   const t = await mount(playingStates({ minutes_left: 4 }));
   assert.ok(t.$(".clock").classList.contains("low"));
+});
+
+test("the screen: what the TV shows, menus too, a new one when it changes", async () => {
+  const shot = (at) => s(at, { entity_picture: "/api/image_proxy/image.arcade_screen?token=k" });
+  const t = await mount();
+  assert.ok(!t.shown(".screen"));  // no screenshot yet
+  await t.set(idleStates({ "image.arcade_screen": shot("2026-11-13T17:00:00+00:00") }));
+  assert.ok(t.shown(".screen"));
+  assert.equal(t.$(".screen img").getAttribute("src"),
+    "/api/image_proxy/image.arcade_screen?token=k&t=2026-11-13T17%3A00%3A00%2B00%3A00");
+  await t.set(playingStates({}, { "image.arcade_screen": shot("2026-11-13T17:00:15+00:00") }));
+  assert.match(t.$(".screen img").getAttribute("src"), /&t=2026-11-13T17%3A00%3A15/);
+  await t.set(idleStates({ "image.arcade_screen": s("unknown", { entity_picture: "/x?token=k" }) }));
+  assert.ok(!t.shown(".screen"));
+  assert.equal(t.$(".screen img").getAttribute("src"), null);
+  await t.set(idleStates({
+    "media_player.arcade": s("off"), "image.arcade_screen": shot("2026-11-13T17:00:30+00:00"),
+  }));
+  assert.ok(!t.shown(".screen"));  // the last one, from before it went off: not now
 });
 
 test("offline and locked banners", async () => {

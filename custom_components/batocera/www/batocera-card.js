@@ -50,6 +50,7 @@ const STRINGS = {
   noMatch: "NO MATCH",
   nowPlaying: "NOW PLAYING",
   noSignal: "NO SIGNAL",
+  screen: "What the TV shows",
   pressStart: "PRESS START",
   cancel: "CANCEL",
   quits: (title) => `QUITS ${title}`,
@@ -159,6 +160,9 @@ const STYLE = `
   .kill { color: var(--bt-red); box-shadow: 0 0 6px rgba(255, 90, 110, 0.3); }
   .kill.sure { background: var(--bt-red); color: var(--bt-bg); }
 
+  .screen { max-width: 640px; margin: 16px auto 0; padding: 0 12px; }
+  .screen img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000;
+    border: 2px solid var(--bt-edge); box-shadow: 0 0 12px rgba(62, 244, 255, 0.15); }
   .banner { text-align: center; padding: 28px 16px 12px; }
   .banner .big { font-size: clamp(16px, 4.5vw, 28px); line-height: 1.4; }
   .banner .note { margin-top: 12px; font-size: 14px; color: var(--bt-dim); letter-spacing: 0.08em; }
@@ -347,6 +351,7 @@ class BatoceraCard extends HTMLElement {
             <button class="kill" type="button"></button>
           </div>
         </header>
+        <div class="screen hidden"><img alt="${STRINGS.screen}"></div>
         <div class="banner"><div class="big"></div><div class="note"></div></div>
         <section class="browse">
           <div class="nav">
@@ -376,6 +381,7 @@ class BatoceraCard extends HTMLElement {
     const $ = (sel) => root.querySelector(sel);
     this.$ = {
       wrap: $(".wrap"), cover: $(".cover"), img: $(".cover img"), title: $(".title"), sub: $(".sub"),
+      screen: $(".screen"), shot: $(".screen img"),
       clock: $(".clock"), label: $(".clock .label"), left: $(".clock .left"), ctl: $(".ctl"),
       pause: $(".pause"), kill: $(".kill"), banner: $(".banner"), big: $(".banner .big"),
       note: $(".banner .note"), back: $(".back"), where: $(".where"), tabs: $(".tabs"),
@@ -745,6 +751,16 @@ class BatoceraCard extends HTMLElement {
       this.$.img.removeAttribute("src");
     }
     this.$.cover.classList.toggle("hidden", !picture);
+
+    // What the TV shows, menus too. The image entity's state is when the
+    // screenshot was taken: in the URL, so a new one is not the cached one.
+    const screen = this._state("screen");
+    const fresh = online && screen && !["unknown", "unavailable"].includes(screen.state);
+    const base = fresh && screen.attributes.entity_picture;
+    const shot = base && `${base}${base.includes("?") ? "&" : "?"}t=${encodeURIComponent(screen.state)}`;
+    if (shot && this.$.shot.getAttribute("src") !== shot) this.$.shot.setAttribute("src", shot);
+    if (!shot) this.$.shot.removeAttribute("src");
+    this.$.screen.classList.toggle("hidden", !shot);
 
     const left = attr.minutes_left;
     this.$.clock.classList.toggle("hidden", !playing);
