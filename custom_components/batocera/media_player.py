@@ -19,7 +19,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import BatoceraConfigEntry
-from .box import BoxError, logo_type
+from .box import BoxError, logo_type, logos_id
 from .browse import browse, parse_game, search, search_scope
 from .const import DOMAIN
 from .entity import LiveEntity
@@ -87,6 +87,8 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
         return {
             # Changes when the catalog does: the panel then reads it again.
             "catalog": self.box.catalog_hash,
+            # Changes when a system's logo does: the panel shows the new one.
+            "logos": logos_id(self.box.logo_ids),
             # True or False when the box knows whether the game can pause.
             "pausable": self.box.pausable if playing else None,
             # Only while playing: it would change every minute otherwise.
@@ -121,7 +123,10 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
         return SearchMedia(result=search(self.box, query.search_query, self._image_url, system))
 
     def _image_url(self, content_id: str) -> str:
-        return self.get_browse_image_url(MediaType.GAME, content_id)
+        # A logo's URL changes with the logo, so no cache keeps the old one.
+        logo = self.box.logo_ids.get(content_id.removeprefix("system:"))
+        image_id = logo if content_id.startswith("system:") else None
+        return self.get_browse_image_url(MediaType.GAME, content_id, image_id)
 
     async def async_get_browse_image(
         self, media_content_type: str, media_content_id: str, media_image_id: str | None = None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 import hashlib
@@ -63,16 +64,73 @@ class Game(NamedTuple):
     folder: str  # under the system's ROM folder: "Fighter", "Extra/Demos", or ""
 
 
+# An SVG: <svg> first, after an XML declaration, comments, a DOCTYPE.
+SVG_START = re.compile(
+    rb"(?:\s+|<\?xml[^>]*>|<!--.*?-->|<!DOCTYPE[^>\[]*>)*<svg[\s/>]", re.S | re.I
+)
+SVG_TAG = re.compile(rb"<svg[\s/>][^>]*>?", re.I)
+SVG_SIDE_MAX = 100_000.0  # a logo bigger than this, or not saying, is 300 x 150
+
+
 def logo_type(data: bytes) -> str | None:
     """The media type of a system logo's bytes: SVG, PNG or JPEG, else None."""
     head = data[:4096].removeprefix(b"\xef\xbb\xbf").lstrip()
-    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head):
+    if SVG_START.match(head):
         return "image/svg+xml"
     if head.startswith(b"\x89PNG"):
         return "image/png"
     if data.startswith(b"\xff\xd8"):
         return "image/jpeg"
     return None
+
+
+def _svg_size(tag: bytes) -> tuple[float, float]:
+    """Width and height of an SVG from its <svg> tag: the viewBox, else
+    width and height in px; 300 x 150 (what browsers use) when neither says."""
+
+    def attr(name: bytes) -> str:
+        found = re.search(rb"\s" + name + rb"""\s*=\s*["']([^"']*)["']""", tag)
+        return found.group(1).decode("ascii", "replace").strip() if found else ""
+
+    def side(text: str) -> float | None:
+        try:
+            value = float(text.removesuffix("px"))
+        except ValueError:
+            return None
+        return value if 0 < value <= SVG_SIDE_MAX else None
+
+    box = re.split(r"[\s,]+", attr(b"viewBox"))
+    if len(box) == 4 and (w := side(box[2])) and (h := side(box[3])):
+        return w, h
+    if (w := side(attr(b"width"))) and (h := side(attr(b"height"))):
+        return w, h
+    return 300.0, 150.0
+
+
+def contained_logo(data: bytes) -> bytes | None:
+    """A system logo as Home Assistant serves it, or None when it is not one.
+
+    PNG and JPEG as they are. An SVG can carry scripts, and Home Assistant
+    serves it from its own origin: opened on its own, it would run as Home
+    Assistant. So the SVG goes inside one of ours, as an <image>: an SVG drawn
+    as an image runs no script and loads nothing, wherever it is shown."""
+    kind = logo_type(data)
+    if kind != "image/svg+xml":
+        return data if kind else None
+    tag = SVG_TAG.search(data[:8192])
+    w, h = _svg_size(tag.group(0) if tag else b"")
+    href = "data:image/svg+xml;base64," + base64.b64encode(data).decode("ascii")
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:g}" height="{h:g}" '
+        f'viewBox="0 0 {w:g} {h:g}"><image width="{w:g}" height="{h:g}" href="{href}"/></svg>'
+    ).encode("ascii")
+
+
+def logos_id(ids: dict[str, str]) -> str | None:
+    """One hash for all the logos (Box.logo_ids), None when there is none."""
+    if not ids:
+        return None
+    return hashlib.sha256(json.dumps(sorted(ids.items())).encode()).hexdigest()[:12]
 
 
 def _folder(value: Any) -> str:
@@ -148,7 +206,8 @@ class Box:
         self.catalog_hash: str | None = None
         self._system_games: dict[str, list[Game]] = {}
         self.games: dict[str, Game] = {}
-        self.logos: dict[str, bytes] = {}  # system name -> SVG/PNG/JPEG
+        self.logos: dict[str, bytes] = {}  # system name -> contained_logo()
+        self.logo_ids: dict[str, str] = {}  # system name -> hash of its logo
         self.covers: Any = None  # a covers.CoverCache, set up with the entry
 
         # Limits, set from the config entities. 0 minutes means no daily
@@ -279,10 +338,16 @@ class Box:
         payload: bytes = msg.payload  # type: ignore[assignment]
         if part.startswith("logo/"):
             name = part.removeprefix("logo/")
-            if SYSTEM_NAME.match(name) and len(payload) <= LOGO_MAX and logo_type(payload):
-                self.logos[name] = payload
+            logo = None
+            if SYSTEM_NAME.match(name) and len(payload) <= LOGO_MAX:
+                logo = contained_logo(payload)
+            if logo:
+                self.logos[name] = logo
+                self.logo_ids[name] = hashlib.sha256(logo).hexdigest()[:12]
             else:  # cleared, or nothing we can show
                 self.logos.pop(name, None)
+                self.logo_ids.pop(name, None)
+            self._update()  # the panel shows the new logo
             return
         try:
             if part == "index":

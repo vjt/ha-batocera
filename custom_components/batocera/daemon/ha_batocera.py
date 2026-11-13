@@ -54,6 +54,7 @@ ES_URL = "http://127.0.0.1:1234"
 ES_TIMEOUT = 10         # seconds for one call to EmulationStation
 ES_MAX = 32 * 1024 * 1024  # never read a bigger answer
 LOGO_MAX = 256 * 1024   # never publish a bigger system logo
+LOGO_UNKNOWN = "?"  # a logo an earlier run may have left on the broker
 CATALOG_EVERY = 30 * 60  # seconds between catalog reads while no game runs
 CATALOG_RETRY = 30      # seconds before asking EmulationStation again
 CATALOG_AFTER_GAME = 10  # seconds after a game, for its play count to be saved
@@ -284,10 +285,14 @@ def rom_folder(path, roms=ROMS):
     return "/".join(parts[len(top) + 1:-1])
 
 
+# An SVG: <svg> first, after an XML declaration, comments, a DOCTYPE.
+SVG_START = re.compile(rb"(?:\s+|<\?xml[^>]*>|<!--.*?-->|<!DOCTYPE[^>\[]*>)*<svg[\s/>]", re.S | re.I)
+
+
 def image_type(data):
     """The media type of a logo's bytes: SVG, PNG or JPEG, else None."""
     head = data[:4096].removeprefix(b"\xef\xbb\xbf").lstrip()
-    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head):
+    if SVG_START.match(head):
         return "image/svg+xml"
     if head.startswith(b"\x89PNG"):
         return "image/png"
@@ -977,6 +982,9 @@ class Daemon:
             if self.index_sent is None and payload:  # left by an earlier run
                 try:
                     self.published = {e["name"]: e["hash"] for e in json.loads(payload)}
+                    # Its logos are not known: the first read publishes or
+                    # clears each one, so none is left behind.
+                    self.logos_sent = {name: LOGO_UNKNOWN for name in self.published}
                 except (ValueError, TypeError, KeyError) as err:
                     log.warning("retained catalog index: %s", err)
                 else:

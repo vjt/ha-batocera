@@ -814,9 +814,9 @@ class BatoceraCard extends HTMLElement {
     const { state, attr } = this._player();
     const playing = state === "playing" || state === "paused";
     const online = playing || state === "idle";
-    // Read the folder again when the catalog changes or the box comes back,
-    // and mark the game that runs now.
-    const seen = `${attr.catalog || ""}|${online}`;
+    // Read the folder again when the catalog or a logo changes or the box
+    // comes back, and mark the game that runs now.
+    const seen = `${attr.catalog || ""}|${attr.logos || ""}|${online}`;
     if (seen !== this._seen) {
       this._seen = seen;
       this._browse();
