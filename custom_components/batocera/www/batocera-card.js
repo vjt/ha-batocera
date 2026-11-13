@@ -64,6 +64,8 @@ const SURE_MS = 4000;
 const COVERS_AT_ONCE = 4;
 // How long a launch may take before the card stops waiting for it.
 const START_MS = 30000;
+// How long typing must pause before the box's catalog is searched.
+const SEARCH_MS = 250;
 // The folders of a system: all its games, its favourites, played last.
 const TABS = [["system", "all"], ["fav", "favourites"], ["recent", "recent"]];
 
@@ -160,9 +162,15 @@ const STYLE = `
   .kill { color: var(--bt-red); box-shadow: 0 0 6px rgba(255, 90, 110, 0.3); }
   .kill.sure { background: var(--bt-red); color: var(--bt-bg); }
 
-  .screen { max-width: 640px; margin: 16px auto 0; padding: 0 12px; }
-  .screen img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000;
-    border: 2px solid var(--bt-edge); box-shadow: 0 0 12px rgba(62, 244, 255, 0.15); }
+  .shot { flex: none; width: 96px; aspect-ratio: 16 / 9; min-width: 0; min-height: 0; padding: 0;
+          background: #000; border: 2px solid var(--bt-edge); box-shadow: none; cursor: zoom-in; }
+  .shot img { display: block; width: 100%; height: 100%; object-fit: contain; }
+  .zoom {
+    position: fixed; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(0, 0, 0, 0.88); cursor: zoom-out;
+  }
+  .zoom img { max-width: 100%; max-height: 100%; object-fit: contain; background: #000;
+              border: 2px solid var(--bt-cyan); box-shadow: 0 0 24px rgba(62, 244, 255, 0.35); }
   .banner { text-align: center; padding: 28px 16px 12px; }
   .banner .big { font-size: clamp(16px, 4.5vw, 28px); line-height: 1.4; }
   .banner .note { margin-top: 12px; font-size: 14px; color: var(--bt-dim); letter-spacing: 0.08em; }
@@ -219,6 +227,8 @@ const STYLE = `
               text-shadow: 0 0 8px rgba(255, 233, 77, 0.6); }
   .dir.system .art { display: none; }
   .dir.system { justify-content: center; min-height: 96px; }
+  .dir.system.logo .art { display: flex; aspect-ratio: 2 / 1; min-height: 0; background: transparent; }
+  .dir.system.logo .art.none { display: none; }
 
   .sheet {
     position: fixed; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center;
@@ -247,6 +257,7 @@ const STYLE = `
   @media (max-width: 600px) {
     .bar { padding: 8px 12px; gap: 10px; }
     .cover { width: 44px; height: 44px; }
+    .shot { width: 72px; }
     .ctl { flex: 1 1 100%; }
     .ctl button { flex: 1; }
     .browse { padding: 0 12px 24px; }
@@ -341,6 +352,7 @@ class BatoceraCard extends HTMLElement {
       <div class="wrap">
         <header class="bar">
           <div class="cover"><img alt=""></div>
+          <button class="shot hidden" type="button" aria-label="${STRINGS.screen}"><img alt="${STRINGS.screen}"></button>
           <div class="now">
             <div class="title"></div>
             <div class="sub"></div>
@@ -351,7 +363,6 @@ class BatoceraCard extends HTMLElement {
             <button class="kill" type="button"></button>
           </div>
         </header>
-        <div class="screen hidden"><img alt="${STRINGS.screen}"></div>
         <div class="banner"><div class="big"></div><div class="note"></div></div>
         <section class="browse">
           <div class="nav">
@@ -364,6 +375,9 @@ class BatoceraCard extends HTMLElement {
           <div class="status"><div class="big"></div><div class="note"></div></div>
           <div class="grid"></div>
         </section>
+        <div class="zoom hidden" role="dialog" aria-modal="true" aria-label="${STRINGS.screen}" tabindex="-1">
+          <img alt="${STRINGS.screen}">
+        </div>
         <div class="sheet hidden" role="dialog" aria-modal="true">
           <div class="panel">
             <div class="art"><span class="nosignal">${STRINGS.noSignal}</span><img alt=""></div>
@@ -381,7 +395,7 @@ class BatoceraCard extends HTMLElement {
     const $ = (sel) => root.querySelector(sel);
     this.$ = {
       wrap: $(".wrap"), cover: $(".cover"), img: $(".cover img"), title: $(".title"), sub: $(".sub"),
-      screen: $(".screen"), shot: $(".screen img"),
+      shot: $(".shot"), shotImg: $(".shot img"), zoom: $(".zoom"), zoomImg: $(".zoom img"),
       clock: $(".clock"), label: $(".clock .label"), left: $(".clock .left"), ctl: $(".ctl"),
       pause: $(".pause"), kill: $(".kill"), banner: $(".banner"), big: $(".banner .big"),
       note: $(".banner .note"), back: $(".back"), where: $(".where"), tabs: $(".tabs"),
@@ -398,7 +412,16 @@ class BatoceraCard extends HTMLElement {
       const tab = e.target.closest("button");
       if (tab) this._tab(tab.dataset.kind);
     });
-    this.$.search.addEventListener("input", () => this._renderGrid());
+    this.$.search.addEventListener("input", () => this._onSearch());
+    this.$.shot.addEventListener("click", () => {
+      this._zoomed = true;
+      this._renderZoom();
+      this.$.zoom.focus();
+    });
+    this.$.zoom.addEventListener("click", () => this._unzoom());
+    this.$.zoom.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") this._unzoom();
+    });
     this.$.grid.addEventListener("click", (e) => {
       const tile = e.target.closest(".tile");
       if (!tile) return;
@@ -441,11 +464,58 @@ class BatoceraCard extends HTMLElement {
   }
 
   // Within a system: all its games, its favourites, or those played last.
+  // From one of its folders, the tab is for the whole system.
   _tab(kind) {
-    const [, system] = split(this._here().id);
+    const system = split(this._here().id)[1].split(":")[0];
     if (!system) return;
+    while (this._stack.length > 2 && split(this._here().id)[0] === "dir") this._stack.pop();
     this._here().id = `${kind}:${system}`;
     this._browse();
+  }
+
+  // --- searching --------------------------------------------------------
+
+  // From the top, a system or one of its folders, the box's whole catalog
+  // (or the system's, sub-folders included) is searched through Home
+  // Assistant. Favourites and recently played are filtered here.
+  _searchRemote() {
+    const [kind] = split(this._here().id);
+    return kind === "" || kind === "system" || kind === "dir";
+  }
+
+  _onSearch() {
+    clearTimeout(this._searchTimer);
+    const query = this.$.search.value.trim();
+    if (query && this._searchRemote()) {
+      this._searchTimer = setTimeout(() => this._search(query), SEARCH_MS);
+    } else {
+      this._dropSearch();
+    }
+    this._renderGrid();
+  }
+
+  // Forget the answers, and any still on their way.
+  _dropSearch() {
+    clearTimeout(this._searchTimer);
+    this._searchSeq = (this._searchSeq || 0) + 1;
+    this._found = undefined;
+  }
+
+  _search(query) {
+    const here = this._here();
+    const seq = (this._searchSeq = (this._searchSeq || 0) + 1);
+    const msg = { type: "media_player/search_media", entity_id: this._config.entities.player, search_query: query };
+    if (here.id) Object.assign(msg, { media_content_type: "directory", media_content_id: here.id });
+    Promise.resolve(this._hass.callWS(msg))
+      .then((answer) => {
+        if (seq === this._searchSeq) this._found = { items: (answer && answer.result) || [] };
+      })
+      .catch(() => {
+        if (seq === this._searchSeq) this._found = { items: null };  // filter here instead
+      })
+      .finally(() => {
+        if (seq === this._searchSeq) this._renderGrid();
+      });
   }
 
   _browse() {
@@ -453,6 +523,9 @@ class BatoceraCard extends HTMLElement {
     const seq = (this._seq = (this._seq || 0) + 1);
     this._folder = undefined;
     this._failed = false;
+    this._dropSearch();
+    const query = this.$.search.value.trim();
+    if (query && this._searchRemote()) this._search(query);  // a new catalog, or tab
     this._renderGrid();
     Promise.resolve(this._hass.callWS({
       type: "media_player/browse_media", entity_id: this._config.entities.player,
@@ -567,7 +640,15 @@ class BatoceraCard extends HTMLElement {
     if (item.can_expand) {
       const [kind] = split(item.media_content_id);
       tile.classList.add(kind);
-      art.textContent = { fav: "★", recent: "⟲" }[kind] || "";
+      if (kind === "system" && item.thumbnail) {  // the system's logo
+        tile.classList.add("logo");
+        const img = el("img");
+        img.alt = "";
+        art.append(img);
+        this._cover(art, img, item.thumbnail);
+      } else {
+        art.textContent = { fav: "★", recent: "⟲", dir: "▤" }[kind] || "";
+      }
       tile.append(art, el("span", "tn", item.title));
       return tile;
     }
@@ -660,31 +741,50 @@ class BatoceraCard extends HTMLElement {
     const title = root ? this._config.name || "" : this._folder ? this._folder.title : here.title;
     this.$.where.textContent = title;
     this.$.tabs.classList.toggle("hidden", !system);
-    for (const tab of this.$.tabs.children) tab.setAttribute("aria-pressed", String(tab.dataset.kind === kind));
+    const pressed = kind === "dir" ? "system" : kind;
+    for (const tab of this.$.tabs.children) tab.setAttribute("aria-pressed", String(tab.dataset.kind === pressed));
 
-    let items = (this._folder && this._folder.children) || [];
-    const query = fold(this.$.search.value.trim());
-    const shown = query ? items.filter((item) => fold(item.title).includes(query)) : items;
+    const items = (this._folder && this._folder.children) || [];
+    const text = this.$.search.value.trim();
+    const remote = !!text && this._searchRemote() && !(this._found && this._found.items === null);
+    const query = fold(text);
+    const shown = remote ? (this._found && this._found.items) || []
+      : query ? items.filter((item) => fold(item.title).includes(query)) : items;
     let big = "";
     let note = "";
     if (this._failed) [big, note] = [STRINGS.noCatalog, STRINGS.noCatalogNote];
     else if (!this._folder) big = STRINGS.loading;
     else if (root && !items.some((i) => split(i.media_content_id)[0] === "system")) {
       [big, note] = [STRINGS.noCatalog, STRINGS.noCatalogNote];
-      items = [];
-    } else if (!items.length) big = STRINGS.noGames;
+    } else if (remote && !this._found) big = STRINGS.loading;
+    else if (!items.length && !remote) big = STRINGS.noGames;
     else if (!shown.length) big = STRINGS.noMatch;
     this.$.statusBig.textContent = big;
     this.$.statusNote.textContent = note;
     this.$.status.classList.toggle("hidden", !big);
 
     const playing = this._player().attr.media_content_id;
-    this._items = items.length ? shown : [];
+    this._items = big && big !== STRINGS.noMatch ? [] : shown;
     // The tiles are made anew: forget the old ones' covers still waiting.
     if (this._observer) this._observer.disconnect();
     this.$.grid.replaceChildren(...this._items.map((item, i) => this._tile(item, i, playing)));
     this._queue = this._queue.filter((job) => job.art.isConnected);
     this._pump();
+  }
+
+  // The screenshot, as big as the page allows: until a tap, Escape, or the
+  // screenshot goes away.
+  _renderZoom() {
+    const src = this.$.shotImg.getAttribute("src");
+    const open = !!this._zoomed && !!src;
+    if (open && this.$.zoomImg.getAttribute("src") !== src) this.$.zoomImg.setAttribute("src", src);
+    if (!open) this.$.zoomImg.removeAttribute("src");
+    this.$.zoom.classList.toggle("hidden", !open);
+  }
+
+  _unzoom() {
+    this._zoomed = false;
+    this._renderZoom();
   }
 
   _pause() {
@@ -758,9 +858,11 @@ class BatoceraCard extends HTMLElement {
     const fresh = online && screen && !["unknown", "unavailable"].includes(screen.state);
     const base = fresh && screen.attributes.entity_picture;
     const shot = base && `${base}${base.includes("?") ? "&" : "?"}t=${encodeURIComponent(screen.state)}`;
-    if (shot && this.$.shot.getAttribute("src") !== shot) this.$.shot.setAttribute("src", shot);
-    if (!shot) this.$.shot.removeAttribute("src");
-    this.$.screen.classList.toggle("hidden", !shot);
+    if (shot && this.$.shotImg.getAttribute("src") !== shot) this.$.shotImg.setAttribute("src", shot);
+    if (!shot) this.$.shotImg.removeAttribute("src");
+    this.$.shot.classList.toggle("hidden", !shot);
+    if (!shot) this._zoomed = false;
+    this._renderZoom();
 
     const left = attr.minutes_left;
     this.$.clock.classList.toggle("hidden", !playing);

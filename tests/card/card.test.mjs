@@ -67,6 +67,23 @@ const FOLDERS = {
 const browseMedia = (folders = FOLDERS) => (msg) =>
   folders[msg.media_content_id] ? Promise.resolve(structuredClone(folders[msg.media_content_id]))
     : Promise.reject(new Error("not found"));
+// Home Assistant's media search over the same games: of the system the
+// search starts from (sub-folders included), or of all.
+const fold = (text) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const searchMedia = (folders = FOLDERS) => (msg) => {
+  const games = new Map();
+  for (const f of Object.values(folders)) {
+    for (const c of f.children || []) if (c.can_play) games.set(c.media_content_id, c);
+  }
+  const scope = msg.media_content_id ? msg.media_content_id.split(":")[1] : null;
+  const query = fold(msg.search_query.trim());
+  const result = [...games.values()]
+    .filter((g) => (!scope || g.media_content_id.split(":")[1] === scope) && fold(g.title).includes(query))
+    .sort((a, b) => fold(a.title).localeCompare(fold(b.title)));
+  return Promise.resolve({ result: structuredClone(result) });
+};
+const SEARCH_WAIT = 300;  // past the card's debounce
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const windows = [];
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -82,7 +99,7 @@ async function mount(states = idleStates(), { control = true, ws = {}, folders =
   const calls = [];
   const wsCalls = [];
   const fetched = [];
-  ws = { "media_player/browse_media": browseMedia(folders), ...ws };
+  ws = { "media_player/browse_media": browseMedia(folders), "media_player/search_media": searchMedia(folders), ...ws };
   const card = window.document.createElement("batocera-card");
   card.setConfig({ name: "Arcade", entry_id: "e1", entities: ENTITIES });
   window.document.body.appendChild(card);
@@ -125,8 +142,14 @@ async function mount(states = idleStates(), { control = true, ws = {}, folders =
     $(".search").dispatchEvent(new window.Event("input"));
     await flush();
   };
+  // Type, then wait past the debounce for the search to be asked and answered.
+  const search = async (text) => {
+    await type(text);
+    await wait(SEARCH_WAIT);
+    await flush();
+  };
   const services = (fn) => { answer = fn; };
-  return { window, card, root, $, $$, calls, wsCalls, fetched, sent, asked, set, text, shown, tiles, open, type, services };
+  return { window, card, root, $, $$, calls, wsCalls, fetched, sent, asked, set, text, shown, tiles, open, type, search, services };
 }
 
 // --- the now-playing bar ------------------------------------------------
@@ -162,23 +185,37 @@ test("the last minutes are flagged", async () => {
   assert.ok(t.$(".clock").classList.contains("low"));
 });
 
-test("the screen: what the TV shows, menus too, a new one when it changes", async () => {
+test("the screen is a preview in the bar; tap opens it, escape or off closes it", async () => {
   const shot = (at) => s(at, { entity_picture: "/api/image_proxy/image.arcade_screen?token=k" });
   const t = await mount();
-  assert.ok(!t.shown(".screen"));  // no screenshot yet
+  assert.ok(!t.shown(".shot"));  // no screenshot yet
+  assert.ok(!t.$(".screen"));  // the old full-width block is gone
+  assert.ok(t.$(".bar .shot"), "the preview sits in the bar");
   await t.set(idleStates({ "image.arcade_screen": shot("2026-11-13T17:00:00+00:00") }));
-  assert.ok(t.shown(".screen"));
-  assert.equal(t.$(".screen img").getAttribute("src"),
-    "/api/image_proxy/image.arcade_screen?token=k&t=2026-11-13T17%3A00%3A00%2B00%3A00");
+  assert.ok(t.shown(".shot"));
+  const src = "/api/image_proxy/image.arcade_screen?token=k&t=2026-11-13T17%3A00%3A00%2B00%3A00";
+  assert.equal(t.$(".shot img").getAttribute("src"), src);
+  assert.ok(!t.shown(".zoom"));
+  t.$(".shot").click();
+  assert.ok(t.shown(".zoom"));
+  assert.equal(t.$(".zoom img").getAttribute("src"), src);
+  t.$(".zoom").dispatchEvent(new t.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.ok(!t.shown(".zoom"));
+  t.$(".shot").click();
+  t.$(".zoom").click();  // a tap anywhere closes it too
+  assert.ok(!t.shown(".zoom"));
   await t.set(playingStates({}, { "image.arcade_screen": shot("2026-11-13T17:00:15+00:00") }));
-  assert.match(t.$(".screen img").getAttribute("src"), /&t=2026-11-13T17%3A00%3A15/);
-  await t.set(idleStates({ "image.arcade_screen": s("unknown", { entity_picture: "/x?token=k" }) }));
-  assert.ok(!t.shown(".screen"));
-  assert.equal(t.$(".screen img").getAttribute("src"), null);
+  assert.match(t.$(".shot img").getAttribute("src"), /&t=2026-11-13T17%3A00%3A15/);
+  t.$(".shot").click();
+  assert.match(t.$(".zoom img").getAttribute("src"), /&t=2026-11-13T17%3A00%3A15/);
   await t.set(idleStates({
     "media_player.arcade": s("off"), "image.arcade_screen": shot("2026-11-13T17:00:30+00:00"),
   }));
-  assert.ok(!t.shown(".screen"));  // the last one, from before it went off: not now
+  assert.ok(!t.shown(".shot"));  // the last one, from before it went off: not now
+  assert.ok(!t.shown(".zoom"));  // and an open zoom closes
+  await t.set(idleStates({ "image.arcade_screen": s("unknown", { entity_picture: "/x?token=k" }) }));
+  assert.ok(!t.shown(".shot"));
+  assert.equal(t.$(".shot img").getAttribute("src"), null);
 });
 
 test("offline and locked banners", async () => {
@@ -266,14 +303,109 @@ test("a system: its games, its tabs, back to the top", async () => {
 test("search, without minding case or accents", async () => {
   const t = await mount();
   await t.open("Sega Mega Drive");
-  await t.type("POKEMON");
+  await t.search("POKEMON");
   assert.deepEqual(t.tiles(), ["Pokémon Crystal"]);
-  await t.type("zelda");
+  await t.search("zelda");
   assert.deepEqual(t.tiles(), []);
   assert.equal(t.text(".status .big"), "NO MATCH");
   t.$(".back").click();
   await flush();
   assert.equal(t.$(".search").value, "");
+});
+
+test("search from the top finds games of every system", async () => {
+  const t = await mount();
+  await t.type("ma");
+  await t.search("mario");  // typed fast: one search, for the last text
+  assert.deepEqual(t.asked("media_player/search_media"), [
+    { type: "media_player/search_media", entity_id: "media_player.arcade", search_query: "mario" },
+  ]);
+  assert.deepEqual(t.tiles(), ["Super Mario World"]);
+  await t.search("s");
+  assert.deepEqual(t.tiles(), ["Pokémon Crystal", "Sonic the Hedgehog", "Streets of Rage", "Super Mario World"]);
+  await t.open("Super Mario World");
+  assert.ok(t.shown(".sheet"));
+  assert.equal(t.text(".ssystem"), "Super Nintendo");
+  t.$(".cancel").click();
+  await t.type("");  // cleared: the systems again, at once
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
+  await wait(SEARCH_WAIT);
+  assert.equal(t.asked("media_player/search_media").length, 2);
+});
+
+test("only the latest search shows", async () => {
+  const pending = [];
+  const t = await mount(idleStates(), {
+    ws: { "media_player/search_media": (msg) => new Promise((resolve) => pending.push([msg, resolve])) },
+  });
+  await t.search("sonic");
+  await t.search("mario");
+  assert.equal(pending.length, 2);
+  pending[1][1]({ result: [MARIO] });
+  await flush();
+  pending[0][1]({ result: [SONIC] });  // late: thrown away
+  await flush();
+  assert.deepEqual(t.tiles(), ["Super Mario World"]);
+  await t.type("");
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
+});
+
+const KI = game("mame", "0000000000a1", "Killer Instinct");
+const GALAXIAN = game("mame", "0000000000a2", "Galaxian");
+const MAME = {
+  ...FOLDERS,
+  "": folder("", "Arcade", [
+    ...FOLDERS[""].children,
+    { ...folder("system:mame", "MAME"), thumbnail: thumb("system:mame") },
+  ]),
+  "system:mame": folder("system:mame", "MAME", [folder("dir:mame:Fighter", "Fighter"), GALAXIAN]),
+  "dir:mame:Fighter": folder("dir:mame:Fighter", "Fighter", [KI]),
+  "fav:mame": folder("fav:mame", "Favourites · MAME", [KI]),
+};
+
+test("inside a system, search covers its sub-folders", async () => {
+  const t = await mount(idleStates(), { folders: MAME });
+  await t.open("MAME");
+  await t.open("Fighter");
+  await t.search("galax");
+  assert.deepEqual(t.asked("media_player/search_media").at(-1), {
+    type: "media_player/search_media", entity_id: "media_player.arcade", search_query: "galax",
+    media_content_type: "directory", media_content_id: "dir:mame:Fighter",
+  });
+  assert.deepEqual(t.tiles(), ["Galaxian"]);
+  t.$('.tabs [data-kind="fav"]').click();  // favourites: filtered here
+  await flush();
+  assert.deepEqual(t.tiles(), ["Killer Instinct"]);
+  await t.search("killer");
+  assert.deepEqual(t.tiles(), ["Killer Instinct"]);
+  await t.search("galax");
+  assert.deepEqual(t.tiles(), []);
+  assert.equal(t.asked("media_player/search_media").length, 1);
+});
+
+test("systems show their logo, folders a folder tile", async () => {
+  const t = await mount(idleStates(), { folders: MAME });
+  const mame = t.$$(".grid .tile.system").find((n) => n.querySelector(".tn").textContent === "MAME");
+  assert.ok(mame.classList.contains("logo"));
+  assert.ok(mame.querySelector(".art img"), "the logo");
+  await flush();
+  assert.ok(t.fetched.includes(thumb("system:mame")), "fetched with the user's auth");
+  const snes = t.$$(".grid .tile.system").find((n) => n.querySelector(".tn").textContent === "Super Nintendo");
+  assert.ok(!snes.classList.contains("logo") && !snes.querySelector(".art img"));
+  await t.open("MAME");
+  const fighter = t.$$(".grid .tile").find((n) => n.querySelector(".tn").textContent === "Fighter");
+  assert.ok(fighter.classList.contains("dir"));
+  await t.open("Fighter");
+  assert.equal(t.text(".where"), "Fighter");
+  assert.deepEqual(t.tiles(), ["Killer Instinct"]);
+  assert.ok(t.shown(".tabs"));
+  t.$('.tabs [data-kind="system"]').click();  // ALL: the whole system again
+  await flush();
+  assert.deepEqual(t.asked("media_player/browse_media").at(-1).media_content_id, "system:mame");
+  t.$(".back").click();  // from the system, not from a folder left behind
+  await flush();
+  assert.equal(t.text(".where"), "Arcade");
+  assert.ok(!t.shown(".back"));
 });
 
 test("the running game stands out", async () => {
