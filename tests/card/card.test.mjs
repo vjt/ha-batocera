@@ -373,9 +373,10 @@ test("inside a system, search covers its sub-folders", async () => {
     media_content_type: "directory", media_content_id: "dir:mame:Fighter",
   });
   assert.deepEqual(t.tiles(), ["Galaxian"]);
-  t.$('.tabs [data-kind="fav"]').click();  // favourites: filtered here
+  t.$('.tabs [data-kind="fav"]').click();  // favourites: filtered here, the query stays
   await flush();
-  assert.deepEqual(t.tiles(), ["Killer Instinct"]);
+  assert.equal(t.$(".search").value, "galax");
+  assert.deepEqual(t.tiles(), []);
   await t.search("killer");
   assert.deepEqual(t.tiles(), ["Killer Instinct"]);
   await t.search("galax");
