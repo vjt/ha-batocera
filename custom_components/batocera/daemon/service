@@ -15,7 +15,9 @@ case "$1" in
         ;;
     stop)
         # SIGTERM: the daemon publishes "off" and "offline" before leaving.
-        start-stop-daemon -K -q -p "$PIDFILE"
+        # Wait until it has left: a start right after a stop (install.sh,
+        # the Services menu) would find it alive and start nothing.
+        start-stop-daemon -K -q -p "$PIDFILE" --retry TERM/10/KILL/5
         ;;
     status)
         if start-stop-daemon --status -q -p "$PIDFILE"; then
