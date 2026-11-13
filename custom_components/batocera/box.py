@@ -32,6 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 WARN_BEFORE = timedelta(minutes=5)
 RESEND_STOP = timedelta(minutes=1)
 CATALOG_MAX = 32 * 1024 * 1024  # never inflate a catalog message beyond this
+LOGO_MAX = 256 * 1024  # system logos bigger than this are ignored
 GAME_ID = re.compile(r"^[0-9a-f]{12}$")
 SYSTEM_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 FAVOURITE, HAS_COVER = 1, 2  # row flags, as the daemon sets them
@@ -59,6 +60,26 @@ class Game(NamedTuple):
     has_cover: bool
     playcount: int
     lastplayed: str  # EmulationStation's "20261102T183000", or ""
+    folder: str  # under the system's ROM folder: "Fighter", "Extra/Demos", or ""
+
+
+def logo_type(data: bytes) -> str | None:
+    """The media type of a system logo's bytes: SVG, PNG or JPEG, else None."""
+    head = data[:4096].removeprefix(b"\xef\xbb\xbf").lstrip()
+    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head):
+        return "image/svg+xml"
+    if head.startswith(b"\x89PNG"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    return None
+
+
+def _folder(value: Any) -> str:
+    """A row's folder, with no empty, "." or ".." parts; "" when there is none."""
+    if not isinstance(value, str):
+        return ""
+    return "/".join(p for p in value.split("/") if p not in ("", ".", ".."))
 
 
 def _load_json(payload: bytes) -> Any:
@@ -72,7 +93,8 @@ def _load_json(payload: bytes) -> Any:
 
 
 def _game(system: str, row: Any) -> Game | None:
-    """A catalog row: [id, name, year, genre, players, flags, playcount, lastplayed]."""
+    """A catalog row: [id, name, year, genre, players, flags, playcount,
+    lastplayed, folder]; rows of daemons before 0.4 have no folder."""
     if not isinstance(row, list) or len(row) < 8:
         return None
     gid, name, year, genre, players, flags, playcount, lastplayed = row[:8]
@@ -89,6 +111,7 @@ def _game(system: str, row: Any) -> Game | None:
         bool(flags & HAS_COVER),
         playcount if isinstance(playcount, int) else 0,
         str(lastplayed or ""),
+        _folder(row[8]) if len(row) > 8 else "",
     )
 
 
@@ -125,6 +148,7 @@ class Box:
         self.catalog_hash: str | None = None
         self._system_games: dict[str, list[Game]] = {}
         self.games: dict[str, Game] = {}
+        self.logos: dict[str, bytes] = {}  # system name -> SVG/PNG/JPEG
         self.covers: Any = None  # a covers.CoverCache, set up with the entry
 
         # Limits, set from the config entities. 0 minutes means no daily
@@ -253,6 +277,13 @@ class Box:
     def _on_catalog(self, msg: ReceiveMessage) -> None:
         part = msg.topic.removeprefix(f"{self.prefix}/catalog/")
         payload: bytes = msg.payload  # type: ignore[assignment]
+        if part.startswith("logo/"):
+            name = part.removeprefix("logo/")
+            if SYSTEM_NAME.match(name) and len(payload) <= LOGO_MAX and logo_type(payload):
+                self.logos[name] = payload
+            else:  # cleared, or nothing we can show
+                self.logos.pop(name, None)
+            return
         try:
             if part == "index":
                 entries = _load_json(payload) if payload else []

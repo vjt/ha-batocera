@@ -11,7 +11,7 @@ import time
 import pytest
 from pytest_homeassistant_custom_component.common import async_fire_mqtt_message
 
-from custom_components.batocera.box import BoxError
+from custom_components.batocera.box import LOGO_MAX, BoxError, logo_type
 
 from conftest import BARE, INDEX, MARIO, ROWS, SONIC, SOR, TOPIC, publish_catalog
 
@@ -66,6 +66,51 @@ async def test_bad_catalog_messages_are_ignored(hass, mqtt_mock, setup, caplog):
     assert [s["name"] for s in box.systems] == ["megadrive", "snes"]
     assert len(box.system_games("megadrive")) == 3  # kept
     assert box.system_games("snes") == []
+
+
+async def test_folder_from_the_ninth_column(hass, mqtt_mock, setup):
+    box = setup.runtime_data
+    rows = {"megadrive": [
+        [SONIC, "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "", "Fighter"],
+        [SOR, "Streets of Rage", 1991, "", "", 0, 0, ""],  # an older daemon: flat
+        [BARE, "Bare", None, "", "", 0, 0, "", 42],
+    ], "snes": [[MARIO, "Super Mario World", 1990, "", "", 0, 0, "", "/Extra//Demos/../"]]}
+    await publish_catalog(hass, rows=rows)
+    assert box.games[SONIC].folder == "Fighter"
+    assert box.games[SOR].folder == ""
+    assert box.games[BARE].folder == ""
+    assert box.games[MARIO].folder == "Extra/Demos"  # no empty, "." or ".." parts
+
+
+SVG = b'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"/>'
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
+
+
+async def test_logos(hass, mqtt_mock, setup):
+    box = setup.runtime_data
+    await publish_catalog(hass)
+    fire(hass, "catalog/logo/snes", SVG)
+    fire(hass, "catalog/logo/megadrive", PNG)
+    fire(hass, "catalog/logo/nes", SVG)  # not in the index: kept, browse ignores it
+    fire(hass, "catalog/logo/garbage", b"hello")
+    fire(hass, "catalog/logo/huge", b"<svg>" + b" " * LOGO_MAX)
+    await hass.async_block_till_done()
+    assert box.logos == {"snes": SVG, "megadrive": PNG, "nes": SVG}
+    fire(hass, "catalog/logo/snes", b"")  # cleared
+    fire(hass, "catalog/logo/megadrive", b"hello")  # replaced by garbage
+    await hass.async_block_till_done()
+    assert box.logos == {"nes": SVG}
+    assert len(box.games) == 4  # the catalog is untouched
+
+
+def test_logo_type():
+    assert logo_type(SVG) == "image/svg+xml"
+    assert logo_type(b"\xef\xbb\xbf  <svg/>") == "image/svg+xml"
+    assert logo_type(PNG) == "image/png"
+    assert logo_type(b"\xff\xd8\xff\xe0") == "image/jpeg"
+    assert logo_type(b"<?xml version='1.0'?><html/>") is None
+    assert logo_type(b"<html><body>404</body></html>") is None
+    assert logo_type(b"") is None
 
 
 async def test_new_leaves(hass, mqtt_mock, setup):
