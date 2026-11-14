@@ -259,6 +259,11 @@ recorder:
 
 ## The Batocera page
 
+<p>
+  <img src="docs/page-games.jpg" width="300" alt="The Batocera page on a phone: nothing playing, the box's systems as tiles">
+  <img src="docs/page-live.jpg" width="300" alt="The Batocera page on a phone: Mario Kart 8 Deluxe playing, the TV shown live">
+</p>
+
 The integration adds a **Batocera** page to the sidebar, with one tab per box.
 At the top, what is playing: cover, name, system, time played, and the time
 left before the daily limit or the end of the window (or FREE PLAY), with
