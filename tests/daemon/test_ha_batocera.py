@@ -1280,7 +1280,10 @@ class DaemonTest(TempDirTest):
             with mock.patch.object(hb, "STOP_GRACE", 0):
                 self.d.game["starttime"] = None  # pretend the launcher exited
                 self.d.on_mqtt("batocera/test/cmd stop")
-        self.assertEqual(self.run.calls, [(["batocera-es-swissknife", "--emukill"], None)])
+        # emukill's exit can leave the exit keys held: hotkeygen is restarted
+        # once the game is gone, so the next one is not closed at its start.
+        self.assertEqual(self.run.calls, [(["batocera-es-swissknife", "--emukill"], None),
+                                          (["/etc/init.d/S90hotkeygen", "restart"], None)])
 
     def test_unknown_command(self):
         with self.assertLogs(hb.log, "WARNING"):

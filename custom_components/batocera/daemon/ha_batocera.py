@@ -1022,6 +1022,15 @@ class Daemon:
                     os.kill(victim, signal.SIGKILL)
                 except OSError:
                     pass
+        # emukill quits through "hotkeygen --send exit", which can leave the
+        # exit keys (LEFTALT+F4) held on hotkeygen's keyboard: the next game
+        # would then be closed as soon as it starts. Restarting hotkeygen
+        # drops its keyboard, and the keys with it.
+        try:
+            self.run(["/etc/init.d/S90hotkeygen", "restart"],
+                     capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as err:
+            log.warning("hotkeygen restart: %s", err)
 
     def on_mqtt(self, line):
         """One "topic payload" line from mosquitto_sub -v."""
