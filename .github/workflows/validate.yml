@@ -1,0 +1,27 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hassfest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: hacs/action@main
+        with:
+          category: integration
