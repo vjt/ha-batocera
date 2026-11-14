@@ -347,9 +347,11 @@ def catalog_system(system, games, kid_mode):
 
 
 def catalog_systems(systems):
-    """The systems shown: visible game systems, no collections."""
+    """The systems shown: visible game systems, no collections, and not the
+    screenshot viewer, which EmulationStation calls a game system too."""
     return [s for s in systems
             if isinstance(s, dict) and SYSTEM_NAME.match(str(s.get("name", "")))
+            and s.get("name") != "imageviewer"
             and truthy(s.get("visible")) and truthy(s.get("gamesystem"))
             and not truthy(s.get("collection"))]
 

@@ -13,7 +13,7 @@
      "collection": "true", "gamesystem": "false", "groupsystem": "false",
      "totalGames": 1, "visibleGames": 1},
     {"name": "imageviewer", "fullname": "Screenshots", "visible": "true",
-     "collection": "false", "gamesystem": "false", "groupsystem": "false",
+     "collection": "false", "gamesystem": "true", "groupsystem": "false",
      "totalGames": 3, "visibleGames": 3},
     {"name": "n64", "fullname": "Nintendo 64", "manufacturer": "Nintendo",
      "releaseYear": "1996", "visible": "false", "collection": "false",
@@ -46,6 +46,11 @@
       {"id": "b0", "path": "/userdata/roms/snes/Mario World.sfc", "name": "Super Mario World",
        "systemName": "snes", "releasedate": "19901121T000000", "genre": "Platform",
        "players": "1-2", "thumbnail": "/systems/snes/games/b0/media/thumbnail"}
+    ],
+    "imageviewer": [
+      {"id": "e0", "path": "/userdata/screenshots/screenshot-2025.12.24-14h37.06.png",
+       "name": "screenshot-2025.12.24-14h37.06", "systemName": "imageviewer",
+       "hidden": "false", "kidgame": "false"}
     ],
     "n64": [
       {"id": "c0", "path": "/userdata/roms/n64/Mario 64.z64", "name": "Super Mario 64",
