@@ -30,7 +30,9 @@ class ManualLock(BatoceraEntity, SwitchEntity):
         return self.box.manual_lock
 
     async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.box.async_check_admin(self._context)
         self.box.set_option("manual_lock", True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.box.async_check_admin(self._context)
         self.box.set_option("manual_lock", False)

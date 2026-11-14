@@ -301,6 +301,16 @@ class Box:
         if not self.may_control(user):
             raise Unauthorized(context=context, permission=POLICY_CONTROL)
 
+    async def async_check_admin(self, context: Context | None) -> None:
+        """Raise Unauthorized unless the caller is an admin: the limits and
+        the manual lock are theirs, whoever else may play. Calls without a
+        user are allowed, as in async_check_control."""
+        if context is None or context.user_id is None:
+            return
+        user = await self.hass.auth.async_get_user(context.user_id)
+        if user is None or not user.is_active or not user.is_admin:
+            raise Unauthorized(context=context, permission=POLICY_CONTROL)
+
     # --- listeners ------------------------------------------------------
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:

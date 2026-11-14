@@ -39,4 +39,5 @@ class WindowBound(BatoceraEntity, TimeEntity):
         return getattr(self.box, self.key)
 
     async def async_set_value(self, value: time) -> None:
+        await self.box.async_check_admin(self._context)
         self.box.set_option(self.key, value)

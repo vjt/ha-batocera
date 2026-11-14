@@ -35,4 +35,5 @@ class DailyLimit(BatoceraEntity, NumberEntity):
         return self.box.daily_limit
 
     async def async_set_native_value(self, value: float) -> None:
+        await self.box.async_check_admin(self._context)
         self.box.set_option("daily_limit", int(value))

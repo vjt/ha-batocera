@@ -313,6 +313,10 @@ Home Assistant decides, the box obeys:
 - While the lock is on, the daemon stops any game as soon as it is launched.
   The launch itself cannot be refused: Batocera ignores the hook's exit code.
 
+The limits and the manual lock are set on the box's device page (Settings,
+Devices & services, Batocera). Changing them takes an admin, whoever else may
+play; automations may too.
+
 The window runs from "allowed from" to "allowed until". When "until" is
 earlier than "from" it spans midnight (for example 20:00 to 01:00). When both
 are equal there is no window.

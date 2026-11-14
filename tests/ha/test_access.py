@@ -43,6 +43,37 @@ async def test_stop_is_for_admins_and_chosen_users(
     assert len(published(mqtt_mock)) == 3
 
 
+@pytest.mark.parametrize(
+    "service",
+    [("number", "set_value", "number.arcade_daily_limit", {"value": 30}),
+     ("time", "set_value", "time.arcade_allowed_from", {"time": "08:00:00"}),
+     ("time", "set_value", "time.arcade_allowed_until", {"time": "20:00:00"}),
+     ("switch", "turn_on", "switch.arcade_manual_lock", {})],
+)
+async def test_limits_are_for_admins_only(
+    hass, mqtt_mock, setup, hass_admin_user, kid, service
+):
+    domain, name, entity_id, data = service
+
+    async def change_as(user):
+        await hass.services.async_call(
+            domain, name, {"entity_id": entity_id, **data}, blocking=True,
+            context=Context(user_id=user.id if user else None),
+        )
+        await hass.async_block_till_done()
+
+    before = hass.states.get(entity_id).state
+    # allowed to play is not allowed to change the limits
+    hass.config_entries.async_update_entry(setup, options={"control_users": [kid.id]})
+    with pytest.raises(Unauthorized):
+        await change_as(kid)
+    assert hass.states.get(entity_id).state == before
+
+    await change_as(None)  # an automation
+    assert hass.states.get(entity_id).state != before
+    await change_as(hass_admin_user)
+
+
 async def test_inactive_user_may_not(hass, mqtt_mock, setup, kid):
     await play(hass)
     hass.config_entries.async_update_entry(
