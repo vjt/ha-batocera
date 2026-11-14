@@ -23,7 +23,7 @@ const STRINGS = {
   noPauseTitle: "This emulator has no pause",
   resume: "▶ RESUME",
   kill: "✖ KILL",
-  killSure: "✖ SURE?",
+  killSure: "💣 SURE?",
   offline: "OFFLINE",
   offlineNote: "NO SIGNAL FROM THE BOX",
   locked: "GAME OVER — LOCKED",
@@ -167,7 +167,12 @@ const STYLE = `
   button:focus-visible, .search:focus-visible { outline: 2px solid var(--bt-yellow); outline-offset: 2px; }
   button:disabled { cursor: default; opacity: 0.45; box-shadow: none; }
   .kill { color: var(--bt-red); box-shadow: 0 0 6px rgba(255, 90, 110, 0.3); }
-  .kill.sure { background: var(--bt-red); color: var(--bt-bg); }
+  /* :hover too: on a phone the tapped button stays hovered, and the plain
+     hover background (more specific than .kill.sure) hid the red. */
+  .kill.sure, .kill.sure:hover:not(:disabled) {
+    background: var(--bt-red); color: var(--bt-bg);
+    box-shadow: 0 0 14px rgba(255, 90, 110, 0.9), 0 0 28px rgba(255, 90, 110, 0.45);
+  }
 
   .shot { flex: none; width: 96px; aspect-ratio: 16 / 9; min-width: 0; min-height: 0; padding: 0;
           background: #000; border: 2px solid var(--bt-edge); box-shadow: none; cursor: zoom-in; }

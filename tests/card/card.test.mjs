@@ -287,7 +287,7 @@ test("browse only for those who may not play", async () => {
 test("kill takes two taps", async () => {
   const t = await mount(playingStates());
   t.$(".kill").click();
-  assert.equal(t.text(".kill"), "✖ SURE?");
+  assert.equal(t.text(".kill"), "💣 SURE?");
   assert.deepEqual(t.sent(), []);
   t.$(".kill").click();
   assert.deepEqual(t.sent(), [["media_player", "media_stop", { entity_id: "media_player.arcade" }]]);
