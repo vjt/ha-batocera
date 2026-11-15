@@ -67,6 +67,7 @@ class Game(NamedTuple):
     playcount: int
     lastplayed: str  # EmulationStation's "20261102T183000", or ""
     folder: str  # under the system's ROM folder: "Fighter", "Extra/Demos", or ""
+    rating: float | None = None  # 0 to 1; None when unrated
 
 
 # What may come before <svg>: blanks, an XML declaration, comments, a DOCTYPE
@@ -168,9 +169,17 @@ def _load_json(payload: bytes) -> Any:
     return json.loads(payload)
 
 
+def _rating(value: Any) -> float | None:
+    """A row's rating, 0 to 1, or None: unrated, or not a rating."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 1:
+        return float(value)
+    return None
+
+
 def _game(system: str, row: Any) -> Game | None:
     """A catalog row: [id, name, year, genre, players, flags, playcount,
-    lastplayed, folder]; rows of daemons before 0.4 have no folder."""
+    lastplayed, folder, rating]; rows of daemons before 0.4 have no folder,
+    before 0.7 no rating."""
     if not isinstance(row, list) or len(row) < 8:
         return None
     gid, name, year, genre, players, flags, playcount, lastplayed = row[:8]
@@ -188,6 +197,7 @@ def _game(system: str, row: Any) -> Game | None:
         playcount if isinstance(playcount, int) else 0,
         str(lastplayed or ""),
         _folder(row[8]) if len(row) > 8 else "",
+        _rating(row[9]) if len(row) > 9 else None,
     )
 
 

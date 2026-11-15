@@ -271,6 +271,16 @@ def es_year(value):
     return int(match[1]) if match and int(match[1]) else None
 
 
+def es_rating(value):
+    """0.75 from EmulationStation's "0.75"; None when unrated ("0.000000")
+    or not a rating from 0 to 1."""
+    try:
+        rating = float(value)
+    except (TypeError, ValueError):
+        return None
+    return rating if 0 < rating <= 1 else None
+
+
 def es_int(value):
     try:
         return int(value)
@@ -329,7 +339,8 @@ def catalog_system(system, games, kid_mode):
         rows[gid] = [gid, str(game.get("name") or Path(path).stem),
                      es_year(game.get("releasedate")), str(game.get("genre") or ""),
                      str(game.get("players") or ""), flags, es_int(game.get("playcount")),
-                     str(game.get("lastplayed") or ""), rom_folder(path)]
+                     str(game.get("lastplayed") or ""), rom_folder(path),
+                     es_rating(game.get("rating"))]
         roms[gid] = Rom(name, os.path.normpath(path), str(game.get("id", "")), media)
     if not rows:
         return None

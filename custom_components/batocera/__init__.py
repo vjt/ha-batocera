@@ -45,9 +45,21 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     from .dashboard import async_setup_dashboard
 
     websocket_api.async_register_command(hass, ws_access)
+    websocket_api.async_register_command(hass, ws_games)
     hass.http.register_view(LiveView())
     await async_setup_dashboard(hass)
     return True
+
+
+def _ws_box(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> Box | None:
+    """The loaded box msg names, or None once the error is sent."""
+    entry = hass.config_entries.async_get_entry(msg["entry_id"])
+    if entry is None or entry.domain != DOMAIN or entry.state is not ConfigEntryState.LOADED:
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "No such Batocera box")
+        return None
+    return entry.runtime_data
 
 
 @websocket_api.websocket_command(
@@ -59,11 +71,28 @@ def ws_access(
 ) -> None:
     """Whether the user may launch, pause and stop games on a box: the panel
     shows its controls only then. The services check again."""
-    entry = hass.config_entries.async_get_entry(msg["entry_id"])
-    if entry is None or entry.domain != DOMAIN or entry.state is not ConfigEntryState.LOADED:
-        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "No such Batocera box")
-        return
-    connection.send_result(msg["id"], {"control": entry.runtime_data.may_control(connection.user)})
+    if box := _ws_box(hass, connection, msg):
+        connection.send_result(msg["id"], {"control": box.may_control(connection.user)})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "batocera/games",
+        vol.Required("entry_id"): str,
+        vol.Required("system"): str,
+    }
+)
+@callback
+def ws_games(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Genre, year and rating of a system's games, by game id: the page's
+    filters need them, and the media browser does not carry them."""
+    if box := _ws_box(hass, connection, msg):
+        games = box.system_games(msg["system"])
+        connection.send_result(
+            msg["id"], {g.id: {"genre": g.genre, "year": g.year, "rating": g.rating} for g in games}
+        )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> bool:

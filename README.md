@@ -16,8 +16,8 @@ the TV live, quit a stuck game, and set daily playtime limits.
 
 - **A Batocera page** in Home Assistant's sidebar: the box's games with their
   covers, favourites, recently played, one tile per system and per ROM folder,
-  and a search that works at every level. Tap a game, PRESS START, and it
-  starts on the TV.
+  a search that works at every level, and a system's games filtered by genre,
+  decade and rating. Tap a game, PRESS START, and it starts on the TV.
 - **What is playing**: game, system, emulator, cover, since when, and the
   minutes played today.
 - **The TV screen**, menus included: a screenshot every 15 seconds, and live
@@ -106,7 +106,7 @@ Assistant root on the box. As root on the box, with [`get.sh`](get.sh), which
 downloads this release from GitHub over HTTPS and runs the installer:
 
 ```sh
-curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.6.0/get.sh && sh /tmp/ha-batocera-get.sh
+curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.7.0/get.sh && sh /tmp/ha-batocera-get.sh
 ```
 
 Then add the integration in Home Assistant and pick "The box already runs

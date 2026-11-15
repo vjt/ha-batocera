@@ -149,7 +149,17 @@ async function mount(states = idleStates(), { control = true, ws = {}, folders =
     await flush();
   };
   const services = (fn) => { answer = fn; };
-  return { window, card, root, $, $$, calls, wsCalls, fetched, sent, asked, set, text, shown, tiles, open, type, search, services };
+  const select = (key) => $(`.filters [data-filter="${key}"]`);
+  const options = (key) => [...select(key).querySelectorAll("option")].map((o) => o.textContent);
+  const filter = async (key, value) => {
+    select(key).value = value;
+    select(key).dispatchEvent(new window.Event("change", { bubbles: true }));
+    await flush();
+  };
+  return {
+    window, card, root, $, $$, calls, wsCalls, fetched, sent, asked, set, text, shown, tiles, open, type, search,
+    services, select, options, filter,
+  };
 }
 
 // --- the now-playing bar ------------------------------------------------
@@ -453,6 +463,122 @@ test("systems show their logo, folders a folder tile", async () => {
   await flush();
   assert.equal(t.text(".where"), "Arcade");
   assert.ok(!t.shown(".back"));
+});
+
+// --- filters ---------------------------------------------------------------
+
+// What batocera/games answers: genre, year and rating by game id.
+const FACTS = {
+  megadrive: {
+    [SONIC.media_content_id.split(":")[2]]: { genre: "Platform / Run & Jump", year: 1991, rating: 0.75 },
+    [SOR.media_content_id.split(":")[2]]: { genre: "Beat'em up", year: 1991, rating: 0.85 },
+    [BARE.media_content_id.split(":")[2]]: { genre: "None", year: null, rating: null },
+    [POKEMON.media_content_id.split(":")[2]]: { genre: "Platform", year: 2000, rating: null },
+  },
+  snes: { [MARIO.media_content_id.split(":")[2]]: { genre: "", year: 1990, rating: null } },
+  mame: {
+    [KI.media_content_id.split(":")[2]]: { genre: "Fighting", year: 1994, rating: 0.8 },
+    [GALAXIAN.media_content_id.split(":")[2]]: { genre: "Shoot'em Up / Fixed", year: 1979, rating: 0.6 },
+  },
+};
+const gamesOf = (facts = FACTS) => (msg) => Promise.resolve(structuredClone(facts[msg.system] || {}));
+const filtered = (over = {}) => mount(idleStates(), { ws: { "batocera/games": gamesOf() }, ...over });
+
+test("filters: what the system's games have, combined", async () => {
+  const t = await filtered();
+  assert.ok(!t.shown(".filters"));  // at the top: none
+  await t.open("Sega Mega Drive");
+  await flush();
+  assert.deepEqual(t.asked("batocera/games"), [{ type: "batocera/games", entry_id: "e1", system: "megadrive" }]);
+  assert.ok(t.shown(".filters") && !t.shown(".filters .reset"));
+  assert.deepEqual(t.options("genre"), ["ANY GENRE", "Beat'em up", "Platform"]);  // families; no "None"
+  assert.deepEqual(t.options("decade"), ["ANY DECADE", "1990s", "2000s"]);
+  assert.deepEqual(t.options("rating"), ["ANY RATING", "★★★★", "★★★", "★★", "★"]);
+  await t.filter("genre", "Platform");
+  assert.deepEqual(t.tiles(), ["Pokémon Crystal", "Sonic the Hedgehog"]);
+  assert.ok(t.shown(".filters .reset"));
+  await t.filter("decade", "1990");
+  assert.deepEqual(t.tiles(), ["Sonic the Hedgehog"]);
+  await t.filter("decade", "");
+  await t.filter("rating", "4");  // no platformer has four stars or more
+  assert.deepEqual(t.tiles(), []);
+  assert.equal(t.text(".status .big"), "NO MATCH");
+  assert.equal(t.text(".status .note"), "THE FILTERS LEAVE NO GAME");
+  t.$(".filters .reset").click();
+  await flush();
+  assert.deepEqual(t.tiles(), ["Bare", "Pokémon Crystal", "Sonic the Hedgehog", "Streets of Rage"]);
+  assert.deepEqual(["genre", "decade", "rating"].map((k) => t.select(k).value), ["", "", ""]);
+  assert.ok(!t.shown(".filters .reset") && !t.shown(".status"));
+  await t.filter("rating", "3");
+  assert.deepEqual(t.tiles(), ["Sonic the Hedgehog", "Streets of Rage"]);  // unrated: any only
+});
+
+test("filters: only the choices there are", async () => {
+  const t = await filtered();
+  await t.open("Super Nintendo");
+  await flush();
+  assert.deepEqual(t.options("genre"), ["ANY GENRE"]);
+  assert.ok(t.select("genre").disabled && t.select("rating").disabled);  // no genre, no rating
+  assert.ok(!t.select("decade").disabled);
+  const u = await mount();  // batocera/games refused: no filters
+  await u.open("Sega Mega Drive");
+  await flush();
+  assert.ok(!u.shown(".filters"));
+  assert.equal(u.tiles().length, 4);
+});
+
+test("filters stay through tabs, folders and search, and reset when the system is left", async () => {
+  const t = await filtered();
+  await t.open("Sega Mega Drive");
+  await flush();
+  await t.filter("decade", "1990");
+  await t.search("s");  // the system's search, filtered by game id
+  assert.deepEqual(t.tiles(), ["Sonic the Hedgehog", "Streets of Rage"]);
+  await t.type("");
+  t.$('.tabs [data-kind="fav"]').click();
+  await flush();
+  assert.deepEqual(t.tiles(), ["Sonic the Hedgehog"]);
+  await t.filter("genre", "Beat'em up");
+  assert.equal(t.text(".status .note"), "THE FILTERS LEAVE NO GAME");
+  t.$('.tabs [data-kind="recent"]').click();
+  await flush();
+  assert.deepEqual(t.tiles(), ["Streets of Rage"]);
+  assert.equal(t.select("genre").value, "Beat'em up");
+  t.$(".back").click();
+  await flush();
+  assert.ok(!t.shown(".filters"));
+  await t.open("Sega Mega Drive");
+  await flush();
+  assert.equal(t.select("genre").value, "");
+  assert.equal(t.tiles().length, 4);
+  assert.equal(t.asked("batocera/games").length, 1);  // same catalog: asked once
+
+  const m = await filtered({ folders: MAME });
+  await m.open("MAME");
+  await flush();
+  await m.filter("genre", "Fighting");
+  assert.deepEqual(m.tiles(), ["Fighter"]);  // folders stay; Galaxian goes
+  assert.equal(m.text(".status .note"), "THE FILTERS LEAVE NO GAME");
+  await m.open("Fighter");
+  await flush();
+  assert.deepEqual(m.tiles(), ["Killer Instinct"]);
+  assert.equal(m.select("genre").value, "Fighting");
+});
+
+test("filters: a new catalog is asked again, and a value gone goes back to any", async () => {
+  const facts = structuredClone(FACTS);
+  const t = await mount(idleStates(), { ws: { "batocera/games": gamesOf(facts) } });
+  await t.open("Sega Mega Drive");
+  await flush();
+  await t.filter("genre", "Beat'em up");
+  await t.filter("decade", "1990");
+  facts.megadrive[SOR.media_content_id.split(":")[2]].genre = "Fighting";
+  await t.set(idleStates({ "media_player.arcade": s("idle", { catalog: "c2" }) }));
+  await flush();
+  assert.equal(t.asked("batocera/games").length, 2);
+  assert.equal(t.select("genre").value, "");
+  assert.equal(t.select("decade").value, "1990");
+  assert.deepEqual(t.tiles(), ["Sonic the Hedgehog", "Streets of Rage"]);
 });
 
 test("the running game stands out", async () => {
