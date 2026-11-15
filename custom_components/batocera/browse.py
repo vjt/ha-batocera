@@ -18,15 +18,46 @@ Content ids:
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
+import logging
+from typing import Any
 import unicodedata
 
-from homeassistant.components.media_player import BrowseError, BrowseMedia, MediaClass, MediaType
+from homeassistant.components.media_player import (
+    BrowseError,
+    BrowseMedia,
+    MediaClass,
+    MediaType,
+    SearchMedia,
+)
 
-from .box import Box, Game
+from .box import Box, BoxError, Game
+
+_LOGGER = logging.getLogger(__name__)
 
 RECENT = 50  # games in "recently played"
 SEARCH_MAX = 200  # games a search answers with
 DIRECTORY = "directory"  # media_content_type of the folders
+# The descriptions are searched on the box, for a query of DESC_MIN
+# characters or more (a shorter one is in nearly every description) and at
+# most DESC_MAX (a request must stay small); the name matches wait for it
+# at most DESC_TIMEOUT seconds.
+DESC_MIN = 3
+DESC_MAX = 100
+DESC_TIMEOUT = 3
+
+
+@dataclass(kw_only=True, frozen=True)
+class GameSearch(SearchMedia):
+    """A search's answer: the games by name (result), as any media search,
+    then apart the games found by their description alone."""
+
+    in_description: list[BrowseMedia] = field(default_factory=list)
+
+    def as_dict(self, *, parent: bool = True) -> dict[str, Any]:
+        return super().as_dict(parent=parent) | {
+            "in_description": [item.as_dict(parent=parent) for item in self.in_description]
+        }
 
 
 def game_content_id(game: Game) -> str:
@@ -123,6 +154,35 @@ def search(
         key=lambda pair: (pair[0], pair[1].id),
     )
     return [_item(g, image_url) for _, g in found[:SEARCH_MAX]]
+
+
+async def async_search_descriptions(
+    box: Box, query: str, image_url: Callable[[str], str], system: str | None = None
+) -> list[BrowseMedia]:
+    """Games whose description holds the query and whose name does not (those
+    are search's), of one system or all, by name: at most SEARCH_MAX. The box
+    searches them, the descriptions staying there; none when it cannot now
+    (offline, busy, slow, or a daemon too old for the request)."""
+    wanted = fold(query.strip())
+    size = len(" ".join(wanted.split()))  # as the box counts it
+    if not box.online or not DESC_MIN <= size <= DESC_MAX:
+        return []
+    scope = {"system": system} if system else {}
+    try:
+        answer = await box.async_request(
+            "search", timeout=DESC_TIMEOUT, query=query.strip(), **scope
+        )
+    except BoxError as err:  # bad_request: a daemon without it
+        _LOGGER.debug("%s: descriptions not searched: %s", box.name, err)
+        return []
+    ids = answer.get("games")
+    found = {}
+    for gid in ids if isinstance(ids, list) else []:
+        game = box.games.get(gid) if isinstance(gid, str) else None
+        if game and system in (None, game.system) and wanted not in (key := fold(game.name)):
+            found[gid] = (key, game)
+    ordered = sorted(found.values(), key=lambda pair: (pair[0], pair[1].id))
+    return [_item(g, image_url) for _, g in ordered[:SEARCH_MAX]]
 
 
 def browse(box: Box, content_id: str | None, image_url: Callable[[str], str]) -> BrowseMedia:
