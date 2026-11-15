@@ -350,6 +350,10 @@ const STYLE = `
   .ts { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; text-transform: none;
         letter-spacing: 0; font-size: 11px; color: var(--bt-dim); overflow: hidden; text-overflow: ellipsis;
         white-space: nowrap; }
+  /* A game's year and stars, at the foot of its tile. */
+  .tm { display: flex; justify-content: space-between; gap: 6px; margin-top: auto;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; text-transform: none;
+        letter-spacing: 0; font-size: 11px; color: var(--bt-dim); white-space: nowrap; }
   .badge { font-size: 8px; color: var(--bt-pink); animation: blink 1.2s steps(2) infinite; }
   .art {
     position: relative; aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center;
@@ -821,7 +825,10 @@ class BatoceraCard extends HTMLElement {
       .then((games) => {
         if (this._facts.get(place) !== facts) return;
         facts.games = games || {};
-        if (place !== this._filterPlace) return;
+        if (place !== this._filterPlace) {
+          this._renderGrid();  // the tiles' years and stars
+          return;
+        }
         this._renderFilters();
         this._refilter();
       }, () => {
@@ -831,6 +838,30 @@ class BatoceraCard extends HTMLElement {
         this._resetFilters();
         this._refilter();
       });
+  }
+
+  // A game's facts, for its tile: the place's, the game's system's, or the
+  // home's (every game's).
+  _factOf(item) {
+    const [, system, id] = item.media_content_id.split(":");  // game:<system>:<id>
+    for (const place of [this._filterPlace, system, ""]) {
+      const facts = this._facts.get(place);
+      if (facts && facts.games && facts.games[id]) return facts.games[id];
+    }
+    return null;
+  }
+
+  // Games listed where no facts are asked for them, the favourites and
+  // recently played of all systems or a search at the home, ask for every
+  // game's: once a catalog, as a failed ask is not tried again.
+  _askForTiles() {
+    const place = this._filterPlace;
+    if ((place !== undefined && place !== "") || !this._config.entry_id) return;
+    if (!this._items.some((item) => item.can_play && !this._factOf(item))) return;
+    const catalog = this._player().attr.catalog;
+    if (this._tileFacts === catalog) return;
+    this._tileFacts = catalog;
+    this._ask("");
   }
 
   // The facts of the place shown, once they came.
@@ -1046,6 +1077,14 @@ class BatoceraCard extends HTMLElement {
       tile.classList.add("now");
       tile.append(el("span", "badge", STRINGS.nowPlaying));
     }
+    const fact = this._factOf(item) || {};
+    const year = fact.year > 0 ? String(fact.year) : "";
+    const { stars } = traits(fact);
+    if (year || stars) {
+      const meta = el("span", "tm");
+      meta.append(el("span", "ty", year), el("span", "tr", "★".repeat(stars)));
+      tile.append(meta);
+    }
     return tile;
   }
 
@@ -1188,6 +1227,7 @@ class BatoceraCard extends HTMLElement {
       tiles.splice(shown.length, 0, apart);
     }
     this.$.grid.replaceChildren(...tiles);
+    this._askForTiles();
     this._queue = this._queue.filter((job) => job.art.isConnected);
     this._pump();
   }
