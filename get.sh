@@ -7,7 +7,7 @@
 # runs the installer from it. The release is fixed: every release updates TAG.
 set -eu
 
-TAG=v0.8.0
+TAG=v0.9.0
 URL=https://github.com/vjt/ha-batocera/archive/refs/tags/$TAG.tar.gz
 
 dir=$(mktemp -d)
