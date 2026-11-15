@@ -112,6 +112,7 @@ async function mount(states = idleStates(), { control = true, ws = {}, folders =
   let answer = () => Promise.resolve();  // what the services answer
   const hass = () => ({
     states: { ...current },
+    locale: { language: "en" },
     callService: (d, sv, data) => { calls.push([d, sv, data]); return answer(); },
     callWS: (msg) => {
       wsCalls.push(msg);
@@ -499,9 +500,12 @@ const FACTS = {
     [GALAXIAN.media_content_id.split(":")[2]]: { genre: "Shoot'em Up / Fixed", year: 1979, rating: 0.6 },
   },
 };
-// Without a system: every game, the home's.
-const gamesOf = (facts = FACTS) => (msg) => Promise.resolve(structuredClone(
-  msg.system ? facts[msg.system] || {} : Object.assign({}, ...Object.values(facts))));
+// Without a system: every game, the home's; with a game, that one only.
+const gamesOf = (facts = FACTS) => (msg) => {
+  const games = msg.system ? facts[msg.system] || {} : Object.assign({}, ...Object.values(facts));
+  const one = msg.game && games[msg.game] ? { [msg.game]: games[msg.game] } : {};
+  return Promise.resolve(structuredClone(msg.game ? one : games));
+};
 const filtered = (over = {}) => mount(idleStates(), { ws: { "batocera/games": gamesOf() }, ...over });
 
 test("filters: what the system's games have, combined", async () => {
@@ -940,6 +944,88 @@ test("the sheet closes on cancel, outside, or escape", async () => {
   await t.open("Super Mario World");
   t.$(".sheet").dispatchEvent(new t.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.ok(!t.shown(".sheet"));
+});
+
+// What batocera/info answers: what the box adds to the catalog, by game id.
+const SONIC_ID = SONIC.media_content_id.split(":")[2];
+const ABOUT = {
+  desc: "Sonic runs fast.\nDr. Robotnik waits.", developer: "Sonic Team", publisher: "Sega", gametime: 4321,
+};
+const infoOf = (answers) => (msg) => (answers[msg.game]
+  ? Promise.resolve(structuredClone(answers[msg.game])) : Promise.reject(new Error("not found")));
+const ABOUT_SHEET = [".sfacts", ".scredits", ".splayed", ".sdesc"];
+
+test("the sheet tells what the game is: the catalog's facts, then the box's", async () => {
+  const facts = structuredClone(FACTS);
+  Object.assign(facts.megadrive[SONIC_ID], { players: "1", playcount: 12, lastplayed: "20261102T183000" });
+  const t = await mount(idleStates(), {
+    ws: { "batocera/games": gamesOf(facts), "batocera/info": infoOf({ [SONIC_ID]: ABOUT }) },
+  });
+  await t.open("Sega Mega Drive");
+  await t.open("Sonic the Hedgehog");
+  await flush();
+  assert.deepEqual(t.asked("batocera/games").at(-1), { type: "batocera/games", entry_id: "e1", game: SONIC_ID });
+  assert.deepEqual(t.asked("batocera/info"), [{ type: "batocera/info", entry_id: "e1", game: SONIC_ID }]);
+  assert.deepEqual(ABOUT_SHEET.map(t.text), [
+    "1991 · Platform / Run & Jump · 1 player · ★★★",
+    "Sonic Team / Sega",
+    "Played 12 times · last Nov 2, 2026 · 1h 12m in all",
+    "Sonic runs fast.\nDr. Robotnik waits.",
+  ]);
+  assert.ok(!t.$(".start").disabled);
+  await t.set(idleStates());  // the box's updates do not ask again
+  assert.equal(t.asked("batocera/info").length, 1);
+  assert.equal(t.text(".scredits"), "Sonic Team / Sega");
+});
+
+test("an old or busy box: the catalog's facts only; nothing known, nothing said", async () => {
+  const t = await mount(idleStates(), { ws: { "batocera/games": gamesOf() } });  // batocera/info fails
+  await t.open("Sega Mega Drive");
+  await t.open("Streets of Rage");
+  await flush();
+  assert.deepEqual(ABOUT_SHEET.map(t.text), ["1991 · Beat'em up · ★★★★", "", "", ""]);
+  t.$(".cancel").click();
+  await t.open("Bare");  // unscraped: genre "None", no year, no rating
+  await flush();
+  assert.deepEqual(ABOUT_SHEET.map(t.text), ["", "", "", ""]);
+  assert.ok(!t.$(".start").disabled);
+  const u = await mount();  // neither answers: the sheet as it was
+  await u.open("Super Nintendo");
+  await u.open("Super Mario World");
+  await flush();
+  assert.equal(u.text(".stitle"), "Super Mario World");
+  assert.equal(u.text(".ssystem"), "Super Nintendo");
+  assert.deepEqual(ABOUT_SHEET.map(u.text), ["", "", "", ""]);
+  assert.ok(!u.$(".start").disabled);
+});
+
+test("an answer for a game no longer shown is dropped", async () => {
+  let release;
+  const late = new Promise((resolve) => { release = resolve; });
+  const t = await mount(idleStates(), {
+    ws: { "batocera/info": (msg) => (msg.game === SONIC_ID ? late : Promise.resolve({ developer: "Sega AM7" })) },
+  });
+  await t.open("Sega Mega Drive");
+  await t.open("Sonic the Hedgehog");
+  t.$(".cancel").click();
+  await t.open("Streets of Rage");
+  await flush();
+  assert.equal(t.text(".scredits"), "Sega AM7");
+  release(structuredClone(ABOUT));
+  await flush();
+  assert.equal(t.text(".scredits"), "Sega AM7");
+  assert.equal(t.text(".sdesc"), "");
+});
+
+test("one maker is said once; a short time in minutes", async () => {
+  const t = await mount(idleStates(), {
+    ws: { "batocera/info": () => Promise.resolve({ developer: "Nintendo", publisher: "Nintendo", gametime: 1500 }) },
+  });
+  await t.open("Super Nintendo");
+  await t.open("Super Mario World");
+  await flush();
+  assert.equal(t.text(".scredits"), "Nintendo");
+  assert.equal(t.text(".splayed"), "25m in all");
 });
 
 // --- the look --------------------------------------------------------------
