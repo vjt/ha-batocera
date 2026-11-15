@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -50,6 +51,11 @@ REQ_MAX = 4096          # bigger requests are dropped
 REQ_ID = re.compile(r"^[0-9a-f]{8,32}$")
 # Bytes of UTF-8 an info answer keeps of each text; longer ones are cut.
 INFO_TEXT = {"desc": 2048, "developer": 256, "publisher": 256}
+# A search of the descriptions answers with at most as many games as Home
+# Assistant's name search (SEARCH_MAX in browse.py), and only for a query of
+# SEARCH_MIN characters or more: a shorter one is in nearly every description.
+SEARCH_MAX = 200
+SEARCH_MIN = 3
 # EmulationStation's web API, by address: "localhost" may resolve to ::1,
 # which it refuses. Only ever used on the box itself.
 ES_URL = "http://127.0.0.1:1234"
@@ -261,6 +267,7 @@ class SystemCatalog(NamedTuple):
     entry: dict         # for catalog/index
     data: bytes         # the rows, as compact JSON
     roms: dict          # id -> Rom
+    texts: dict         # id -> (name, description), folded, of the games with one
 
 
 def truthy(value):
@@ -312,6 +319,39 @@ def game_details(game):
     return details
 
 
+def fold(text):
+    """Text as a search compares it, as Home Assistant's name search does
+    (browse.fold): no accents, no case."""
+    if text.isascii():  # most descriptions: the same, much faster
+        return text.casefold()
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
+
+
+def fold_words(text):
+    """fold, with every run of blanks (line breaks too) as one space: a
+    description breaks its lines anywhere."""
+    return " ".join(fold(text).split())
+
+
+def search_descriptions(catalog, query, system=None):
+    """The ids of the games whose description holds the query and whose name
+    does not (those the name search finds), of one system or all, by name:
+    at most SEARCH_MAX. No game for a query under SEARCH_MIN characters,
+    blanks aside."""
+    wanted = fold(query.strip())
+    words = " ".join(wanted.split())
+    if len(words) < SEARCH_MIN:
+        return []
+    found = sorted(
+        (name, gid)
+        for system_name, entry in catalog.items() if system in (None, system_name)
+        for gid, (name, desc) in entry.texts.items()
+        if words in desc and wanted not in name
+    )
+    return [gid for _, gid in found[:SEARCH_MAX]]
+
+
 def rom_folder(path, roms=ROMS):
     """The folder of a ROM under its system's ROM folder: "Fighter" for
     /userdata/roms/mame/Fighter/kinst.zip, "" for a ROM at the top or
@@ -350,7 +390,7 @@ def image_type(data):
 def catalog_system(system, games, kid_mode):
     """One system's catalog, or None when no game of it is shown."""
     name = system["name"]
-    rows, roms = {}, {}
+    rows, roms, texts = {}, {}, {}
     for game in games:
         path = game.get("path")
         if not isinstance(path, str) or not path or truthy(game.get("hidden")):
@@ -360,12 +400,16 @@ def catalog_system(system, games, kid_mode):
         gid = game_id(path)
         media = next((key for key in COVER_KEYS if game.get(key)), None)
         flags = (FAVOURITE if truthy(game.get("favorite")) else 0) | (HAS_COVER if media else 0)
-        rows[gid] = [gid, str(game.get("name") or Path(path).stem),
+        title = str(game.get("name") or Path(path).stem)
+        rows[gid] = [gid, title,
                      es_year(game.get("releasedate")), str(game.get("genre") or ""),
                      str(game.get("players") or ""), flags, es_int(game.get("playcount")),
                      str(game.get("lastplayed") or ""), rom_folder(path),
                      es_rating(game.get("rating"))]
         roms[gid] = Rom(name, os.path.normpath(path), str(game.get("id", "")), media)
+        # Kept for search_descriptions, never published: too much for the catalog.
+        if desc := fold_words(str(game.get("desc") or "")):
+            texts[gid] = (fold(title), desc)
     if not rows:
         return None
     ordered = sorted(rows.values(), key=lambda row: (row[1].casefold(), row[0]))
@@ -378,7 +422,7 @@ def catalog_system(system, games, kid_mode):
         "count": len(ordered),
         "hash": hashlib.sha256(data).hexdigest()[:12],
     }
-    return SystemCatalog(entry, data, roms)
+    return SystemCatalog(entry, data, roms, texts)
 
 
 def catalog_systems(systems):
@@ -767,6 +811,7 @@ class Daemon:
             "launch": self.req_launch,
             "pause": self.req_pause,
             "refresh": self.req_refresh,
+            "search": self.req_search,
         }.get(req.get("op"))
         if handler is None:
             log.warning("unknown request %.80r", payload)
@@ -912,6 +957,14 @@ class Daemon:
     def req_refresh(self, rid, req):
         log.info("catalog refresh requested")
         self.respond(rid, None if self.refresh_catalog() else "es_unreachable")
+
+    def req_search(self, rid, req):
+        """The games whose description holds the query and whose name does
+        not, from the catalog's descriptions: they never leave the box."""
+        query, system = req.get("query"), req.get("system")
+        if not isinstance(query, str) or not isinstance(system, (str, type(None))):
+            return self.respond(rid, "bad_request")
+        self.respond(rid, games=search_descriptions(self.catalog, query, system))
 
     # --- the catalog --------------------------------------------------------
 
