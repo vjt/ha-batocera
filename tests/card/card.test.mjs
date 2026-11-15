@@ -1144,6 +1144,7 @@ test("the sheet closes on cancel, outside, or escape", async () => {
 const SONIC_ID = SONIC.media_content_id.split(":")[2];
 const ABOUT = {
   desc: "Sonic runs fast.\nDr. Robotnik waits.", developer: "Sonic Team", publisher: "Sega", gametime: 4321,
+  size: 2_300_000_000,
 };
 const infoOf = (answers) => (msg) => (answers[msg.game]
   ? Promise.resolve(structuredClone(answers[msg.game])) : Promise.reject(new Error("not found")));
@@ -1161,7 +1162,7 @@ test("the sheet tells what the game is: the catalog's facts, then the box's", as
   assert.deepEqual(t.asked("batocera/games").at(-1), { type: "batocera/games", entry_id: "e1", game: SONIC_ID });
   assert.deepEqual(t.asked("batocera/info"), [{ type: "batocera/info", entry_id: "e1", game: SONIC_ID }]);
   assert.deepEqual(ABOUT_SHEET.map(t.text), [
-    "1991 · Platform / Run & Jump · 1 player · ★★★",
+    "1991 · Platform / Run & Jump · 1 player · ★★★ · 2.3 GB",
     "Sonic Team / Sega",
     "Played 12 times · last Nov 2, 2026 · 1h 12m in all",
     "Sonic runs fast.\nDr. Robotnik waits.",
@@ -1220,6 +1221,22 @@ test("one maker is said once; a short time in minutes", async () => {
   await flush();
   assert.equal(t.text(".scredits"), "Nintendo");
   assert.equal(t.text(".splayed"), "25m in all");
+});
+
+test("the space a game takes: SI units, one decimal under 10, none from 10 up", async () => {
+  let size;
+  const t = await mount(idleStates(), { ws: { "batocera/info": () => Promise.resolve({ size }) } });
+  await t.open("Super Nintendo");
+  const shown = [];
+  for (size of [850, 1500, 850_000_000, 999_700_000, 2_300_000_000, 9_960_000_000, 25_000_000_000,
+    1_234_000_000_000, 0]) {
+    await t.open("Super Mario World");
+    await flush();
+    shown.push(t.text(".sfacts"));
+    t.$(".cancel").click();
+    await flush();
+  }
+  assert.deepEqual(shown, ["850 B", "1.5 kB", "850 MB", "1.0 GB", "2.3 GB", "10 GB", "25 GB", "1.2 TB", ""]);
 });
 
 // --- the look --------------------------------------------------------------
