@@ -564,6 +564,16 @@ async def test_running_game_has_a_content_id(hass, mqtt_mock, setup):
     assert hass.states.get("media_player.arcade").attributes["catalog"]
 
 
+async def test_the_player_says_how_many_games(hass, mqtt_mock, setup):
+    fire(hass, "availability", "online")
+    await hass.async_block_till_done()
+    assert hass.states.get("media_player.arcade").attributes["games"] == 0
+    await publish_catalog(hass)
+    games = sum(len(rows) for rows in ROWS.values())
+    assert games > 0
+    assert hass.states.get("media_player.arcade").attributes["games"] == games
+
+
 JPEG = b"\xff\xd8 a cover"
 
 

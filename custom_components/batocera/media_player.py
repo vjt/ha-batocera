@@ -95,6 +95,9 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
         return {
             # Changes when the catalog does: the panel then reads it again.
             "catalog": self.box.catalog_hash,
+            # How many games the box has: the panel's home says it before
+            # every game's facts are asked, which waits for a filter.
+            "games": len(self.box.games),
             # Changes when a system's logo does: the panel shows the new one.
             "logos": logos_id(self.box.logo_ids),
             # True or False when the box knows whether the game can pause.
