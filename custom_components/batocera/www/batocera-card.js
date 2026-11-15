@@ -48,6 +48,11 @@ const STRINGS = {
   noCatalogNote: "THE BOX SENDS ITS GAMES ONCE EMULATIONSTATION IS UP",
   noGames: "NO GAMES HERE",
   noMatch: "NO MATCH",
+  filters: { genre: "GENRE", decade: "DECADE", rating: "RATING" },
+  any: (what) => `ANY ${what}`,
+  decade: (year) => `${year}s`,
+  resetFilters: "✖ RESET",
+  noFit: "THE FILTERS LEAVE NO GAME",
   nowPlaying: "NOW PLAYING",
   noSignal: "NO SIGNAL",
   screen: "What the TV shows",
@@ -92,12 +97,56 @@ const split = (id) => {
   const at = id.indexOf(":");
   return at < 0 ? [id, ""] : [id.slice(0, at), id.slice(at + 1)];
 };
+// "system:snes", "fav:snes", "dir:mame:Fighter" -> the system; "fav" -> "".
+const systemOf = (id) => split(id)[1].split(":")[0];
 // A cover's URL without the user's token, which changes on its own: what is
 // left (media_image_id) names the picture.
 const coverKey = (url) => {
   const [path, query = ""] = url.split("?");
   const kept = query.split("&").filter((p) => p && !p.startsWith("token="));
   return kept.length ? `${path}?${kept.join("&")}` : path;
+};
+
+// The filters narrow a system's games by what batocera/games tells of them:
+// game id -> {genre, year, rating}.
+const FILTERS = ["genre", "decade", "rating"];
+// A game as the filters see it: its genre's family ("Platform" for
+// "Platform / Run & Jump"), its decade ("1990"), its whole stars out of
+// five. Without one ("" or 0), it passes "any" only.
+const traits = (fact) => {
+  const genre = String(fact.genre || "").split(" / ")[0].trim();
+  return {
+    genre: genre === "None" ? "" : genre,
+    decade: fact.year > 0 ? String(Math.floor(fact.year / 10) * 10) : "",
+    stars: fact.rating > 0 ? Math.floor(fact.rating * 5 + 1e-9) : 0,
+  };
+};
+// The items the filters let through: the games that fit all of them, and
+// the folders.
+const narrow = (items, facts, filters) => items.filter((item) => {
+  if (!item.can_play) return true;
+  const game = traits(facts[item.media_content_id.split(":")[2]] || {});  // game:<system>:<id>
+  return (!filters.genre || game.genre === filters.genre)
+    && (!filters.decade || game.decade === filters.decade)
+    && (!filters.rating || game.stars >= Number(filters.rating));
+});
+// What each filter offers, as [value, label]: what the games have, and the
+// rating as a minimum, from the most stars a game has down to one.
+const offers = (facts) => {
+  const genres = new Set();
+  const decades = new Set();
+  let stars = 0;
+  for (const fact of Object.values(facts)) {
+    const game = traits(fact);
+    if (game.genre) genres.add(game.genre);
+    if (game.decade) decades.add(game.decade);
+    stars = Math.max(stars, game.stars);
+  }
+  return {
+    genre: [...genres].sort((a, b) => a.localeCompare(b)).map((g) => [g, g]),
+    decade: [...decades].sort().map((d) => [d, STRINGS.decade(d)]),
+    rating: Array.from({ length: stars }, (_, i) => [String(stars - i), "★".repeat(stars - i)]),
+  };
 };
 
 // The pixel font, bundled with the integration (OFL, see fonts/OFL.txt). It
@@ -164,7 +213,9 @@ const STYLE = `
   }
   button:hover:not(:disabled) { background: rgba(62, 244, 255, 0.1); }
   button:active:not(:disabled) { transform: translateY(1px); }
-  button:focus-visible, .search:focus-visible { outline: 2px solid var(--bt-yellow); outline-offset: 2px; }
+  button:focus-visible, .search:focus-visible, .filters select:focus-visible {
+    outline: 2px solid var(--bt-yellow); outline-offset: 2px;
+  }
   button:disabled { cursor: default; opacity: 0.45; box-shadow: none; }
   .kill { color: var(--bt-red); box-shadow: 0 0 6px rgba(255, 90, 110, 0.3); }
   /* :hover too: on a phone the tapped button stays hovered, and the plain
@@ -203,6 +254,13 @@ const STYLE = `
     border: 2px solid var(--bt-edge); border-radius: 0;
   }
   .search::placeholder { color: var(--bt-dim); font-family: var(--bt-pixel); font-size: 10px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0; }
+  .filters select {  /* 16px, as the search: smaller, and phones zoom in on a tap */
+    flex: 1 1 120px; min-width: 0; min-height: 44px; padding: 8px; font: inherit; font-size: 16px;
+    color: var(--bt-fg); background: var(--bt-panel); border: 2px solid var(--bt-edge); border-radius: 0;
+    color-scheme: dark;
+  }
+  .filters select:disabled { opacity: 0.45; }
   .status { text-align: center; padding: 32px 8px; }
   .status .big { font-size: 13px; color: var(--bt-dim); }
   .status .note { margin-top: 10px; font-size: 13px; color: var(--bt-dim); }
@@ -384,6 +442,10 @@ class BatoceraCard extends HTMLElement {
             <div class="tabs">${TABS.map(([kind, label]) =>
               `<button type="button" data-kind="${kind}">${STRINGS[label]}</button>`).join("")}</div>
           </div>
+          <div class="filters">${FILTERS.map((key) =>
+            `<select data-filter="${key}" aria-label="${STRINGS.filters[key]}"></select>`).join("")}
+            <button class="reset" type="button">${STRINGS.resetFilters}</button>
+          </div>
           <input class="search" type="search" placeholder="${STRINGS.search}" aria-label="${STRINGS.search}">
           <div class="status"><div class="big"></div><div class="note"></div></div>
           <div class="grid"></div>
@@ -412,6 +474,7 @@ class BatoceraCard extends HTMLElement {
       clock: $(".clock"), label: $(".clock .label"), left: $(".clock .left"), ctl: $(".ctl"),
       pause: $(".pause"), kill: $(".kill"), banner: $(".banner"), big: $(".banner .big"),
       note: $(".banner .note"), back: $(".back"), where: $(".where"), tabs: $(".tabs"),
+      filters: $(".filters"), reset: $(".filters .reset"),
       search: $(".search"), status: $(".status"), statusBig: $(".status .big"),
       statusNote: $(".status .note"), grid: $(".grid"), sheet: $(".sheet"),
       sart: $(".sheet .art"), simg: $(".sheet .art img"), stitle: $(".stitle"),
@@ -424,6 +487,14 @@ class BatoceraCard extends HTMLElement {
     this.$.tabs.addEventListener("click", (e) => {
       const tab = e.target.closest("button");
       if (tab) this._tab(tab.dataset.kind);
+    });
+    this.$.filters.addEventListener("change", (e) => {
+      this._filters[e.target.dataset.filter] = e.target.value;
+      this._renderGrid();
+    });
+    this.$.reset.addEventListener("click", () => {
+      this._resetFilters();
+      this._renderGrid();
     });
     this.$.search.addEventListener("input", () => this._onSearch());
     this.$.shot.addEventListener("click", () => {
@@ -458,6 +529,8 @@ class BatoceraCard extends HTMLElement {
       if (e.key === "Escape") this._close();
     });
     this._stack = [{ id: "", title: "" }];
+    this._filters = {};  // filter -> the value chosen, "" for any
+    this._filterSystem = "";  // the system they are for
     this._systems = {};  // system name -> its full name, from the root
     this._blobs = new Map();  // cover URL without its token -> blob URL
     this._queue = [];
@@ -486,7 +559,7 @@ class BatoceraCard extends HTMLElement {
   // Within a system: all its games, its favourites, or those played last.
   // From one of its folders, the tab is for the whole system.
   _tab(kind) {
-    const system = split(this._here().id)[1].split(":")[0];
+    const system = systemOf(this._here().id);
     if (!system) return;
     while (this._stack.length > 2 && split(this._here().id)[0] === "dir") this._stack.pop();
     this._here().id = `${kind}:${system}`;
@@ -540,6 +613,7 @@ class BatoceraCard extends HTMLElement {
 
   _browse() {
     const here = this._here();
+    this._filterFor(systemOf(here.id));
     const seq = (this._seq = (this._seq || 0) + 1);
     this._folder = undefined;
     this._failed = false;
@@ -574,6 +648,61 @@ class BatoceraCard extends HTMLElement {
       .finally(() => {
         if (seq === this._seq) this._renderGrid();
       });
+  }
+
+  // --- filtering --------------------------------------------------------
+
+  // The filters stay through a system's tabs and folders, and reset when it
+  // is left. Its games' genre, year and rating are asked once per system and
+  // catalog; while a new catalog's are on their way, the old ones serve.
+  _filterFor(system) {
+    if (system !== this._filterSystem) {
+      this._filterSystem = system;
+      this._resetFilters();
+    }
+    const catalog = this._player().attr.catalog;
+    const old = this._facts && this._facts.system === system ? this._facts : undefined;
+    if (!system || !this._config.entry_id || (old && old.catalog === catalog)) return;
+    const facts = (this._facts = { system, catalog, games: old && old.games });
+    Promise.resolve(this._hass.callWS({ type: "batocera/games", entry_id: this._config.entry_id, system }))
+      .then((games) => {
+        if (this._facts !== facts) return;
+        facts.games = games || {};
+        this._renderFilters();
+        this._renderGrid();
+      }, () => {
+        if (this._facts !== facts) return;
+        this._facts = undefined;  // no filters, until the next try
+        this._renderGrid();
+      });
+  }
+
+  // The facts of the system shown, once they came.
+  _games() {
+    const facts = this._facts;
+    return facts && facts.system === this._filterSystem ? facts.games : undefined;
+  }
+
+  _resetFilters() {
+    this._filters = {};
+    this._renderFilters();
+  }
+
+  // Each filter offers what the system's games have. A value chosen that
+  // no game has any more goes back to any.
+  _renderFilters() {
+    const games = this._games();
+    const offer = offers(games || {});
+    const option = (value, label) => Object.assign(el("option", "", label), { value });
+    for (const select of this.$.filters.querySelectorAll("select")) {
+      const key = select.dataset.filter;
+      const value = offer[key].some(([v]) => v === this._filters[key]) ? this._filters[key] : "";
+      if (games) this._filters[key] = value;
+      select.replaceChildren(option("", STRINGS.any(STRINGS.filters[key])),
+        ...offer[key].map(([v, label]) => option(v, label)));
+      select.value = value;
+      select.disabled = !offer[key].length;
+    }
   }
 
   // --- the launch sheet -------------------------------------------------
@@ -772,12 +901,21 @@ class BatoceraCard extends HTMLElement {
     const pressed = kind === "dir" ? "system" : kind;
     for (const tab of this.$.tabs.children) tab.setAttribute("aria-pressed", String(tab.dataset.kind === pressed));
 
+    // The filters, once the system's games are known: on what the folder or
+    // the search shows, matched by game id.
+    const games = this._games();
+    const filtering = !!games && FILTERS.some((key) => this._filters[key]);
+    this.$.filters.classList.toggle("hidden", !games);
+    this.$.reset.classList.toggle("hidden", !filtering);
+
     const items = (this._folder && this._folder.children) || [];
     const text = this.$.search.value.trim();
     const remote = !!text && this._searchRemote() && !(this._found && this._found.items === null);
     const query = fold(text);
-    const shown = remote ? (this._found && this._found.items) || []
+    const found = remote ? (this._found && this._found.items) || []
       : query ? items.filter((item) => fold(item.title).includes(query)) : items;
+    const shown = filtering ? narrow(found, games, this._filters) : found;
+    const playable = (list) => list.some((item) => item.can_play);
     let big = "";
     let note = "";
     if (this._failed) [big, note] = [STRINGS.noCatalog, STRINGS.noCatalogNote];
@@ -786,6 +924,7 @@ class BatoceraCard extends HTMLElement {
       [big, note] = [STRINGS.noCatalog, STRINGS.noCatalogNote];
     } else if (remote && !this._found) big = STRINGS.loading;
     else if (!items.length && !remote) big = STRINGS.noGames;
+    else if (playable(found) && !playable(shown)) [big, note] = [STRINGS.noMatch, STRINGS.noFit];
     else if (!shown.length) big = STRINGS.noMatch;
     this.$.statusBig.textContent = big;
     this.$.statusNote.textContent = note;

@@ -88,6 +88,33 @@ async def test_folder_from_the_ninth_column(hass, mqtt_mock, setup):
     assert box.games[MARIO].folder == "Extra/Demos"  # no empty, "." or ".." parts
 
 
+async def test_games_for_the_filters(hass, mqtt_mock, setup, hass_ws_client):
+    rows = {"megadrive": [
+        [SONIC, "Sonic the Hedgehog", 1991, "Platform / Run & Jump", "1", 3, 12, "", "", 0.75],
+        [SOR, "Streets of Rage", 1991, "Beat'em up", "1-2", 0, 0, "", "", 1.5],  # no rating
+        [BARE, "Bare", None, "None", "", 0, 0, "", ""],  # a daemon before 0.7
+    ], "snes": [[MARIO, "Super Mario World", 1990, "", "", 0, 0, "", "", True]]}
+    await publish_catalog(hass, rows=rows)
+    client = await hass_ws_client(hass)
+
+    async def games(system, entry_id=setup.entry_id):
+        await client.send_json_auto_id(
+            {"type": "batocera/games", "entry_id": entry_id, "system": system}
+        )
+        return await client.receive_json()
+
+    assert (await games("megadrive"))["result"] == {
+        SONIC: {"genre": "Platform / Run & Jump", "year": 1991, "rating": 0.75},
+        SOR: {"genre": "Beat'em up", "year": 1991, "rating": None},
+        BARE: {"genre": "None", "year": None, "rating": None},
+    }
+    assert (await games("snes"))["result"] == {
+        MARIO: {"genre": "", "year": 1990, "rating": None}  # true is no rating
+    }
+    assert (await games("nes"))["result"] == {}
+    assert (await games("megadrive", "nope"))["error"]["code"] == "not_found"
+
+
 SVG = b'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"/>'
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
 

@@ -206,17 +206,25 @@ EmulationStation is in Kid mode, only the games marked as kid games.
 then. `catalog/system/<name>` holds, gzip-compressed, one row per game:
 
 ```json
-[["9b1c4e0d2a37", "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000", "Platform"],
- ["0d5e7a9b3c21", "Streets of Rage", 1991, "Beat'em up", "1-2", 0, 0, "", ""]]
+[["9b1c4e0d2a37", "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000", "Platform", 0.75],
+ ["0d5e7a9b3c21", "Streets of Rage", 1991, "Beat'em up", "1-2", 0, 0, "", "", null]]
 ```
 
 That is: id, name, year (or `null`), genre, players, flags, play count, last
-played (EmulationStation's local time, or empty), folder. Flags: 1 =
+played (EmulationStation's local time, or empty), folder, rating. Flags: 1 =
 favourite, 2 = has a cover. The folder is where the ROM sits under its
 system's ROM folder (`Fighter` for `/userdata/roms/mame/Fighter/kinst.zip`,
-`a/b` when nested), empty for a ROM at the top. The id is the first 12 hex
-digits of the MD5 of the ROM's path: `game_id` uses the same, so the running
-game can be found in the catalog.
+`a/b` when nested), empty for a ROM at the top. The rating is
+EmulationStation's, from 0 to 1, or `null` when the game is unrated (`0`) or
+the rating is not a number; rows of daemons before 0.7 stop at the folder,
+and their games count as unrated. The id is the first 12 hex digits of the
+MD5 of the ROM's path: `game_id` uses the same, so the running game can be
+found in the catalog.
+
+The page's genre, decade and rating filters get a system's genre, year and
+rating by game id from Home Assistant, through the `batocera/games`
+websocket command (`entry_id`, `system`): the media browser does not carry
+them.
 
 The catalog is published when the daemon starts (and again until
 EmulationStation answers), after each game (that system only), every 30

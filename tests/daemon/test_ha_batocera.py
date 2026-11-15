@@ -472,11 +472,19 @@ class CatalogTest(TempDirTest):
         sonic = hb.game_id("/userdata/roms/megadrive/Sonic.zip")
         sor = hb.game_id("/userdata/roms/megadrive/Streets of Rage.zip")
         self.assertEqual(rows, [  # by name; the hidden game is left out
-            [hb.game_id("/userdata/roms/megadrive/Bare.zip"), "Bare", None, "", "", 0, 0, "", ""],
-            [hb.game_id("/userdata/roms/megadrive/Comix Zone.zip"), "Comix Zone", None, "", "", 0, 0, "", ""],
-            [sonic, "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000", ""],
-            [sor, "Streets of Rage", 1991, "Beat'em up", "1-2", 2, 0, "", ""],
+            [hb.game_id("/userdata/roms/megadrive/Bare.zip"), "Bare", None, "", "", 0, 0, "", "", None],
+            [hb.game_id("/userdata/roms/megadrive/Comix Zone.zip"), "Comix Zone", None, "", "", 0, 0, "", "",
+             None],  # its rating is garbage
+            [sonic, "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000", "", 0.75],
+            [sor, "Streets of Rage", 1991, "Beat'em up", "1-2", 2, 0, "", "", None],  # unrated
         ])
+
+    def test_es_rating(self):
+        # EmulationStation's rating, 0 to 1 as text; "0.000000" is unrated.
+        for value, rating in [("0.75", 0.75), ("0.7", 0.7), ("1", 1.0), ("0.000000", None),
+                              (None, None), ("", None), ("garbage", None), ("nan", None),
+                              ("inf", None), ("1.5", None), ("-0.5", None)]:
+            self.assertEqual(hb.es_rating(value), rating, value)
 
     def test_rom_folder(self):
         # Only the folder under the system's ROM folder ever leaves the box.
