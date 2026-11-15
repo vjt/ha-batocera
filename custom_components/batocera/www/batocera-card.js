@@ -385,10 +385,15 @@ const STYLE = `
     background: var(--bt-panel); border: 2px solid var(--bt-cyan);
     box-shadow: 0 0 24px rgba(62, 244, 255, 0.35);
   }
-  /* What the game is scrolls, when a short screen must; the warnings and
-     PRESS START below it stay in sight. */
-  .sbody { flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
-  .sheet .panel > :not(.sbody), .sbody > :not(.sdesc) { flex: none; }
+  /* What the game is scrolls as one, the cover going off the top under a
+     long description; the warnings and PRESS START below it stay in sight. */
+  .sbody {
+    flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    display: flex; flex-direction: column; gap: 12px;
+    scrollbar-width: thin; scrollbar-color: var(--bt-edge) transparent;
+  }
+  .sbody:focus-visible { outline: 2px solid var(--bt-yellow); outline-offset: 2px; }
+  .sheet .panel > :not(.sbody), .sbody > * { flex: none; }
   /* The cover gives way on a short screen: on a phone the rest fits under it. */
   .sheet .art { width: min(60vw, 200px, 24vh); width: min(60vw, 200px, 24dvh); margin: 0 auto;
                 border: 2px solid var(--bt-edge); }
@@ -396,14 +401,10 @@ const STYLE = `
   .ssystem { color: var(--bt-dim); }
   .sinfo { display: flex; flex-direction: column; gap: 4px; }
   .sfacts, .scredits, .splayed { font-size: 13px; line-height: 1.4; color: var(--bt-dim); }
-  /* As tall as the screen leaves, the rest a scroll away: it gives way
-     first, down to a few lines, before the cover and the facts do. */
   .sdesc {
-    flex: 0 1 auto; min-height: 4.4em; overflow-y: auto; overscroll-behavior: contain;
     font-size: 14px; line-height: 1.5; text-align: left; white-space: pre-line; overflow-wrap: anywhere;
-    color: var(--bt-fg); scrollbar-width: thin; scrollbar-color: var(--bt-edge) transparent;
+    color: var(--bt-fg);
   }
-  .sdesc:focus-visible { outline: 2px solid var(--bt-yellow); outline-offset: 2px; }
   .sinfo > :empty, .sdesc:empty { display: none; }
   .swarn { color: var(--bt-yellow); font-weight: 600; }
   .smsg { color: var(--bt-red); }
@@ -551,7 +552,7 @@ class BatoceraCard extends HTMLElement {
         </div>
         <div class="sheet hidden" role="dialog" aria-modal="true">
           <div class="panel">
-            <div class="sbody">
+            <div class="sbody" tabindex="0">
               <div class="art"><span class="nosignal">${STRINGS.noSignal}</span><img alt=""></div>
               <div class="stitle"></div>
               <div class="sinfo">
@@ -560,7 +561,7 @@ class BatoceraCard extends HTMLElement {
                 <div class="scredits"></div>
                 <div class="splayed"></div>
               </div>
-              <div class="sdesc" tabindex="0"></div>
+              <div class="sdesc"></div>
             </div>
             <div class="swarn"></div>
             <div class="smsg"></div>
@@ -900,7 +901,6 @@ class BatoceraCard extends HTMLElement {
     this._about(sheet);
     this._renderSheet();
     this.$.sbody.scrollTop = 0;
-    this.$.sdesc.scrollTop = 0;
     this.$.start.focus();
   }
 
