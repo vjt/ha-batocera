@@ -1155,6 +1155,7 @@ class BatoceraCard extends HTMLElement {
       const more = remote && (found.length >= SEARCH_MAX || described.length >= SEARCH_MAX);
       if (!big) count = STRINGS.found(listed, more);
     } else if (games && (root || kind === "system")) count = STRINGS.games(Object.keys(games).length);
+    else if (root && this._player().attr.games > 0) count = STRINGS.games(this._player().attr.games);
     else if (listed) count = STRINGS.games(listed);
     this.$.count.textContent = count;
     // Shown once the place's games are known; at the home, before, as using

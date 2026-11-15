@@ -349,6 +349,14 @@ test("the top: favourites, recent, then the systems", async () => {
   assert.ok(t.$(".grid .tile.fav") && t.$(".grid .tile.recent"));
 });
 
+test("the top says how many games, before any filter asks for their facts", async () => {
+  const t = await mount(idleStates({
+    "media_player.arcade": s("idle", { supported_features: 512 | 4096 | 131072, catalog: "c1", games: 11579 }),
+  }));
+  assert.equal(t.asked("batocera/games").length, 0);
+  assert.equal(t.text(".where .count"), "11579 GAMES");
+});
+
 test("a system: its games, its tabs, back to the top", async () => {
   const t = await mount();
   await t.open("Sega Mega Drive");
