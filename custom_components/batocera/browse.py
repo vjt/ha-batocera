@@ -8,6 +8,9 @@ Content ids:
     "dir:<s>:<folder>"    a sub-folder of a system ("Fighter", "Extra/Demos";
                           everything after the second colon, colons included)
     "game:<s>:<id>"       one game: playable, never expanded
+    "all:<s>", "all:<s>:<folder>"  a system's games, or a folder's, sub-folders
+                          included, as one list: the page's filters show it,
+                          the tree never links to it
 """
 
 from __future__ import annotations
@@ -72,6 +75,11 @@ def _item(game: Game, image_url: Callable[[str], str]) -> BrowseMedia:
         can_expand=False,
         thumbnail=image_url(cid) if game.has_cover else None,
     )
+
+
+def _under(game: Game, folder: str) -> bool:
+    """Whether a game sits in a folder or below it; "" is the whole system."""
+    return not folder or game.folder == folder or game.folder.startswith(f"{folder}/")
 
 
 def _in_folder(
@@ -140,14 +148,14 @@ def browse(box: Box, content_id: str | None, image_url: Callable[[str], str]) ->
         return root
 
     kind, _, rest = content_id.partition(":")
-    system, _, folder = rest.partition(":") if kind == "dir" else (rest, "", "")
+    system, _, folder = rest.partition(":") if kind in ("dir", "all") else (rest, "", "")
     if system and system not in names:
         raise BrowseError(f"No system {system} on {box.name}")
     games = box.system_games(system) if system else list(box.games.values())
     if kind == "system" and system:
         return _in_folder(system, names[system], "", games, image_url)
     if kind == "dir" and system and folder:
-        if not any(g.folder == folder or g.folder.startswith(f"{folder}/") for g in games):
+        if not any(_under(g, folder) for g in games):
             raise BrowseError(f"No folder {folder} in {system} on {box.name}")
         return _in_folder(system, folder.rsplit("/", 1)[-1], folder, games, image_url)
     if kind == "fav":
@@ -157,6 +165,11 @@ def browse(box: Box, content_id: str | None, image_url: Callable[[str], str]) ->
         title = "Recently played" + (f" · {names[system]}" if system else "")
         shown = sorted((g for g in games if g.lastplayed), key=lambda g: g.lastplayed, reverse=True)
         shown = shown[:RECENT]
+    elif kind == "all" and system:
+        shown = [g for g in games if _under(g, folder)]
+        if folder and not shown:
+            raise BrowseError(f"No folder {folder} in {system} on {box.name}")
+        title = folder.rsplit("/", 1)[-1] if folder else names[system]
     else:
         raise BrowseError(f"Nothing to browse at {content_id!r}")
     return _folder(content_id, title, [_item(g, image_url) for g in shown])

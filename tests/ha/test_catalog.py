@@ -357,6 +357,29 @@ async def test_browse_subfolders(hass, mqtt_mock, setup, hass_ws_client):
     ]
 
 
+async def test_browse_flat_for_the_filters(hass, mqtt_mock, setup, hass_ws_client):
+    # A system, or a folder, with everything under it as one list by name.
+    await publish_with_mame(hass)
+    client = await hass_ws_client(hass)
+    result = (await browse(hass, client, "all:mame"))["result"]
+    assert result["title"] == "Arcade"
+    assert [t for _, t in children({"result": result})] == [
+        "1942", "Galaxian", "Killer Instinct", "Pac-Land Demo", "Quiz Show", "Street Fighter II"
+    ]
+    extra = (await browse(hass, client, "all:mame:Extra"))["result"]
+    assert extra["title"] == "Extra"
+    assert children({"result": extra}) == [(f"game:mame:{gid(4)}", "Pac-Land Demo")]
+    assert [t for _, t in children(await browse(hass, client, "all:mame:Fighter"))] == [
+        "Killer Instinct", "Street Fighter II"
+    ]
+    for bad in ("all:mame:Nope", "all:mame:Fight", "all:nes", "all:"):
+        assert (await browse(hass, client, bad))["success"] is False, bad
+    # The tree never leads there.
+    for cid in ("", "system:mame", "dir:mame:Extra"):
+        kids = (await browse(hass, client, cid))["result"]["children"]
+        assert not [c for c in kids if c["media_content_id"].startswith("all:")]
+
+
 def test_search_everywhere():
     from custom_components.batocera.browse import SEARCH_MAX, search
 

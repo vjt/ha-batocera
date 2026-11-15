@@ -490,11 +490,11 @@ class BatoceraCard extends HTMLElement {
     });
     this.$.filters.addEventListener("change", (e) => {
       this._filters[e.target.dataset.filter] = e.target.value;
-      this._renderGrid();
+      this._refilter();
     });
     this.$.reset.addEventListener("click", () => {
       this._resetFilters();
-      this._renderGrid();
+      this._refilter();
     });
     this.$.search.addEventListener("input", () => this._onSearch());
     this.$.shot.addEventListener("click", () => {
@@ -570,10 +570,11 @@ class BatoceraCard extends HTMLElement {
 
   // From the top, a system or one of its folders, the box's whole catalog
   // (or the system's, sub-folders included) is searched through Home
-  // Assistant. Favourites and recently played are filtered here.
+  // Assistant. Favourites, recently played and what the filters list (all
+  // of it, sub-folders included) are searched here.
   _searchRemote() {
     const [kind] = split(this._here().id);
-    return kind === "" || kind === "system" || kind === "dir";
+    return (kind === "" || kind === "system" || kind === "dir") && !this._filtering();
   }
 
   _onSearch() {
@@ -614,6 +615,7 @@ class BatoceraCard extends HTMLElement {
   _browse() {
     const here = this._here();
     this._filterFor(systemOf(here.id));
+    const id = (this._browsed = this._browseId());
     const seq = (this._seq = (this._seq || 0) + 1);
     this._folder = undefined;
     this._failed = false;
@@ -623,7 +625,7 @@ class BatoceraCard extends HTMLElement {
     this._renderGrid();
     Promise.resolve(this._hass.callWS({
       type: "media_player/browse_media", entity_id: this._config.entities.player,
-      media_content_id: here.id, media_content_type: "directory",
+      media_content_id: id, media_content_type: "directory",
     }))
       .then((folder) => {
         if (seq !== this._seq) return;
@@ -669,11 +671,11 @@ class BatoceraCard extends HTMLElement {
         if (this._facts !== facts) return;
         facts.games = games || {};
         this._renderFilters();
-        this._renderGrid();
+        this._refilter();
       }, () => {
         if (this._facts !== facts) return;
         this._facts = undefined;  // no filters, until the next try
-        this._renderGrid();
+        this._refilter();
       });
   }
 
@@ -681,6 +683,23 @@ class BatoceraCard extends HTMLElement {
   _games() {
     const facts = this._facts;
     return facts && facts.system === this._filterSystem ? facts.games : undefined;
+  }
+
+  _filtering() {
+    return !!this._games() && FILTERS.some((key) => this._filters[key]);
+  }
+
+  // What to browse: while a filter is set, a system or folder comes as one
+  // list of its games, sub-folders included (all:<system>[:<folder>]).
+  _browseId() {
+    const [kind, rest] = split(this._here().id);
+    return this._filtering() && (kind === "system" || kind === "dir") ? `all:${rest}` : this._here().id;
+  }
+
+  // The filters changed: browse again when that changes what to browse.
+  _refilter() {
+    if (this._browseId() !== this._browsed) this._browse();
+    else this._renderGrid();
   }
 
   _resetFilters() {
@@ -901,10 +920,10 @@ class BatoceraCard extends HTMLElement {
     const pressed = kind === "dir" ? "system" : kind;
     for (const tab of this.$.tabs.children) tab.setAttribute("aria-pressed", String(tab.dataset.kind === pressed));
 
-    // The filters, once the system's games are known: on what the folder or
-    // the search shows, matched by game id.
+    // The filters, once the system's games are known: on what is listed,
+    // matched by game id.
     const games = this._games();
-    const filtering = !!games && FILTERS.some((key) => this._filters[key]);
+    const filtering = this._filtering();
     this.$.filters.classList.toggle("hidden", !games);
     this.$.reset.classList.toggle("hidden", !filtering);
 
