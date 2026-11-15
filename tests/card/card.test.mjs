@@ -426,6 +426,44 @@ test("only the latest search shows", async () => {
   assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
 });
 
+// The search's answer with, apart, what the box found in the descriptions:
+// query -> those games, as Home Assistant lists them.
+const describing = (found) => (msg) => searchMedia()(msg)
+  .then((answer) => ({ ...answer, in_description: structuredClone(found[msg.search_query] || []) }));
+// The grid as it reads: the tiles' names, the section's heading as "|".
+const grid = (t) => t.$$(".grid > *").map((n) => (n.classList.contains("apart") ? "|" : n.querySelector(".tn").textContent));
+
+test("search: what only a description holds comes apart, after the names", async () => {
+  const t = await mount(idleStates(), {
+    ws: { "media_player/search_media": describing({ sonic: [SOR, MARIO], snowboard: [POKEMON] }) },
+  });
+  await t.search("sonic");
+  assert.deepEqual(grid(t), ["Sonic the Hedgehog", "|", "Streets of Rage", "Super Mario World"]);
+  assert.equal(t.text(".grid .apart"), "IN THE DESCRIPTION");
+  assert.deepEqual(t.systems(), ["Sega Mega Drive", "Sega Mega Drive", "Super Nintendo"]);
+  assert.equal(t.text(".where .count"), "3 FOUND");  // both lists
+  await t.open("Super Mario World");  // a game like any other
+  assert.equal(t.text(".ssystem"), "Super Nintendo");
+  t.$(".cancel").click();
+  // In a description only: no NO MATCH, the section alone.
+  await t.search("snowboard");
+  assert.deepEqual(grid(t), ["|", "Pokémon Crystal"]);
+  assert.ok(!t.shown(".status"));
+  assert.equal(t.text(".where .count"), "1 FOUND");
+  // Nowhere: no section.
+  await t.search("zelda");
+  assert.deepEqual(grid(t), []);
+  assert.equal(t.text(".status .big"), "NO MATCH");
+});
+
+test("search: as many found by description as Home Assistant answers is a +", async () => {
+  const many = Array.from({ length: 200 }, (_, i) => game("snes", i.toString(16).padStart(12, "0"), `Game ${i}`));
+  const t = await mount(idleStates(), { ws: { "media_player/search_media": describing({ sonic: many }) } });
+  await t.search("sonic");
+  assert.equal(t.tiles().length, 201);
+  assert.equal(t.text(".where .count"), "201+ FOUND");
+});
+
 const KI = game("mame", "0000000000a1", "Killer Instinct");
 const GALAXIAN = game("mame", "0000000000a2", "Galaxian");
 const MAME = {

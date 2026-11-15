@@ -64,6 +64,7 @@ const STRINGS = {
   players: (n) => (n === "1" ? "1 player" : `${n} players`),
   games: (n) => (n === 1 ? "1 GAME" : `${n} GAMES`),
   found: (n, more) => `${n}${more ? "+" : ""} FOUND`,
+  inDescription: "IN THE DESCRIPTION",
   played: (n) => (n === 1 ? "Played once" : `Played ${n} times`),
   lastPlayed: (day) => `last ${day}`,
   playTime: (time) => `${time} in all`,
@@ -219,7 +220,7 @@ const STYLE = `
     background: repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0, 0, 0, 0.08) 2px 3px);
   }
   .title, .clock .label, .clock .left, .banner .big, .where, button, .badge,
-  .nosignal, .stitle, .status .big, .dir .tn, .pick {
+  .nosignal, .stitle, .status .big, .dir .tn, .pick, .apart {
     font-family: var(--bt-pixel); text-transform: uppercase; letter-spacing: 0.04em;
   }
 
@@ -322,6 +323,10 @@ const STYLE = `
   .status .note { margin-top: 10px; font-size: 13px; color: var(--bt-dim); }
 
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 14px; }
+  /* The games a search found by their description alone: a row of their own. */
+  .apart { grid-column: 1 / -1; margin-top: 12px; font-size: 10px; line-height: 1.6; color: var(--bt-pink);
+           text-shadow: 0 0 6px rgba(255, 82, 218, 0.6); }
+  .apart:first-child { margin-top: 0; }
   .tile {
     display: flex; flex-direction: column; gap: 8px; text-align: left; padding: 8px; font-size: 13px;
     color: var(--bt-fg); background: var(--bt-panel); border: 2px solid var(--bt-edge);
@@ -683,8 +688,10 @@ class BatoceraCard extends HTMLElement {
 
   // From the top, a system or one of its folders, the box's whole catalog
   // (or the system's, sub-folders included) is searched through Home
-  // Assistant. Favourites, recently played and what the filters list (all
-  // of it, sub-folders included) are searched here.
+  // Assistant: by name, and apart (in_description) the games whose
+  // description alone holds the query. Favourites, recently played and what
+  // the filters list (all of it, sub-folders included) are searched here, by
+  // name.
   _searchRemote() {
     const [kind] = split(this._here().id);
     return (kind === "" || kind === "system" || kind === "dir") && !this._filtering();
@@ -715,7 +722,9 @@ class BatoceraCard extends HTMLElement {
     if (here.id) Object.assign(msg, { media_content_type: "directory", media_content_id: here.id });
     Promise.resolve(this._hass.callWS(msg))
       .then((answer) => {
-        if (seq === this._searchSeq) this._found = { items: (answer && answer.result) || [] };
+        if (seq !== this._searchSeq) return;
+        const { result, in_description: described } = answer || {};
+        this._found = { items: result || [], described: described || [] };
       })
       .catch(() => {
         if (seq === this._searchSeq) this._found = { items: null };  // filter here instead
@@ -1121,6 +1130,8 @@ class BatoceraCard extends HTMLElement {
     const found = remote ? (this._found && this._found.items) || []
       : query ? items.filter((item) => fold(item.title).includes(query)) : items;
     const shown = filtering ? narrow(found, games, this._filters) : found;
+    // Found by their description alone: listed apart, after the names.
+    const described = (remote && this._found && this._found.described) || [];
     const playable = (list) => list.some((item) => item.can_play);
     let big = "";
     let note = "";
@@ -1131,17 +1142,18 @@ class BatoceraCard extends HTMLElement {
     } else if (remote && !this._found) big = STRINGS.loading;
     else if (!items.length && !remote) big = STRINGS.noGames;
     else if (playable(found) && !playable(shown)) [big, note] = [STRINGS.noMatch, STRINGS.noFit];
-    else if (!shown.length) big = STRINGS.noMatch;
+    else if (!shown.length && !described.length) big = STRINGS.noMatch;
     this.$.statusBig.textContent = big;
     this.$.statusNote.textContent = note;
     this.$.status.classList.toggle("hidden", !big);
-    // How many: what a search or the filters found; else the games listed
-    // or, at the home or a system's top once their facts came, all the
-    // games there, folders down.
-    const listed = shown.filter((item) => item.can_play).length;
+    // How many: what a search (by name and by description, both counted) or
+    // the filters found; else the games listed or, at the home or a
+    // system's top once their facts came, all the games there, folders down.
+    const listed = shown.filter((item) => item.can_play).length + described.length;
     let count = "";
     if (text || filtering) {
-      if (!big) count = STRINGS.found(listed, remote && found.length >= SEARCH_MAX);
+      const more = remote && (found.length >= SEARCH_MAX || described.length >= SEARCH_MAX);
+      if (!big) count = STRINGS.found(listed, more);
     } else if (games && (root || kind === "system")) count = STRINGS.games(Object.keys(games).length);
     else if (listed) count = STRINGS.games(listed);
     this.$.count.textContent = count;
@@ -1152,10 +1164,17 @@ class BatoceraCard extends HTMLElement {
     this.$.reset.classList.toggle("hidden", !(filtering || text));
 
     const playing = this._player().attr.media_content_id;
-    this._items = big && big !== STRINGS.noMatch ? [] : shown;
+    this._items = big && big !== STRINGS.noMatch ? [] : [...shown, ...described];
     // The tiles are made anew: forget the old ones' covers still waiting.
     if (this._observer) this._observer.disconnect();
-    this.$.grid.replaceChildren(...this._items.map((item, i) => this._tile(item, i, playing)));
+    const tiles = this._items.map((item, i) => this._tile(item, i, playing));
+    if (described.length && tiles.length) {
+      const apart = el("div", "apart", STRINGS.inDescription);
+      apart.setAttribute("role", "heading");
+      apart.setAttribute("aria-level", "2");
+      tiles.splice(shown.length, 0, apart);
+    }
+    this.$.grid.replaceChildren(...tiles);
     this._queue = this._queue.filter((job) => job.art.isConnected);
     this._pump();
   }
