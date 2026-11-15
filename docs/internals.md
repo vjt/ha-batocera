@@ -224,7 +224,10 @@ found in the catalog.
 The page's genre, decade and rating filters get a system's genre, year and
 rating by game id from Home Assistant, through the `batocera/games`
 websocket command (`entry_id`, `system`): the media browser does not carry
-them.
+them. While a filter is set, a system or one of its folders is listed with
+everything under it as one list of games, no folder tiles, through the media
+browser id `all:<system>` or `all:<system>:<folder>`, which the tree never
+links to; favourites and recently played are flat already.
 
 The catalog is published when the daemon starts (and again until
 EmulationStation answers), after each game (that system only), every 30
