@@ -745,7 +745,6 @@ async def test_info_kept_before_the_size_is_asked_again_once(
     old = {"desc": "Sonic runs fast.", "gametime": 4321}
     for gid, lastplayed in ((SONIC, "20261102T183000"), (SOR, "20261104T200000")):
         (folder / f"{gid}.json").write_text(json.dumps({"lastplayed": lastplayed, "info": old}))
-        os.utime(folder / f"{gid}.json", (time.time(), time.time()))
     # The box is off: what was kept before the size serves meanwhile.
     assert (await info(client, SONIC, setup.entry_id))["result"] == old
     assert daemon.requests == []
