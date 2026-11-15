@@ -11,22 +11,64 @@
       },
       "install": {
         "title": "Install on the box",
-        "description": "Home Assistant connects to the box over SSH as root, adds an SSH key of its own to root's authorized keys, and installs the ha-batocera daemon. From then on it uses that key to keep the daemon up to date.",
+        "description": "Home Assistant connects to the box over SSH as root, adds an SSH key of its own to root's authorized keys, and installs the ha-batocera daemon. From then on it uses that key to keep the daemon up to date.\n\nThe box needs an account of its own on your MQTT broker: create one, and enter it under Advanced with the broker's address as the box reaches it. If the broker uses ACLs, give the account [these rights]({acls}). With Advanced left empty, Home Assistant looks for the broker from the box, and uses it if it needs no account.",
         "data": {
           "name": "Name",
           "host": "Box host",
-          "password": "Root password",
-          "mqtt_host": "Broker host",
-          "mqtt_port": "Broker port",
-          "mqtt_user": "MQTT user",
-          "mqtt_password": "MQTT password"
+          "password": "Root password"
         },
         "data_description": {
           "name": "The box's MQTT topics go under batocera/ and this name, in lower case, with underscores for spaces.",
           "host": "Host name or IP address of the box.",
-          "password": "Batocera's default root password is linux. It is used for this install only and is not stored.",
-          "mqtt_host": "The broker as the box reaches it: an address on your network, not core-mosquitto or localhost.",
-          "mqtt_user": "An account for the box. Leave empty if the broker needs none."
+          "password": "Batocera's default root password is linux. It is used for this install only and is not stored."
+        },
+        "sections": {
+          "advanced": {
+            "name": "Advanced",
+            "description": "The broker as the box reaches it, and the box's account on it. If any of these is filled in, Home Assistant looks for nothing and uses them as given.",
+            "data": {
+              "mqtt_host": "Broker host",
+              "mqtt_port": "Broker port",
+              "mqtt_user": "MQTT user",
+              "mqtt_password": "MQTT password"
+            },
+            "data_description": {
+              "mqtt_host": "An address on your network, not core-mosquitto or localhost.",
+              "mqtt_port": "Empty for 1883.",
+              "mqtt_user": "Empty if the broker needs no account."
+            }
+          }
+        }
+      },
+      "install_mosquitto": {
+        "title": "Install on the box",
+        "description": "Home Assistant connects to the box over SSH as root, adds an SSH key of its own to root's authorized keys, and installs the ha-batocera daemon. From then on it uses that key to keep the daemon up to date.\n\nHome Assistant will add an MQTT user for this box to the Mosquitto add-on and restart it. Devices on MQTT reconnect within seconds.",
+        "data": {
+          "name": "Name",
+          "host": "Box host",
+          "password": "Root password"
+        },
+        "data_description": {
+          "name": "The box's MQTT topics go under batocera/ and this name, in lower case, with underscores for spaces.",
+          "host": "Host name or IP address of the box.",
+          "password": "Batocera's default root password is linux. It is used for this install only and is not stored."
+        },
+        "sections": {
+          "advanced": {
+            "name": "Advanced",
+            "description": "Another broker, as the box reaches it, and the box's account on it. If any of these is filled in, Home Assistant adds no user to the add-on and uses them as given.",
+            "data": {
+              "mqtt_host": "Broker host",
+              "mqtt_port": "Broker port",
+              "mqtt_user": "MQTT user",
+              "mqtt_password": "MQTT password"
+            },
+            "data_description": {
+              "mqtt_host": "An address on your network, not core-mosquitto or localhost.",
+              "mqtt_port": "Empty for 1883.",
+              "mqtt_user": "Empty if the broker needs no account."
+            }
+          }
         }
       },
       "manual": {
@@ -57,7 +99,13 @@
       "cannot_connect": "Cannot connect to the box over SSH.",
       "invalid_auth": "The box refused the root password.",
       "host_key_mismatch": "The box's SSH host key changed during the install.",
-      "install_failed": "The install failed on the box. The Home Assistant log has the details."
+      "install_failed": "The install failed on the box. The Home Assistant log has the details.",
+      "mqtt_refused": "The box cannot connect to the MQTT broker at {broker}: connection refused, or host not found.",
+      "mqtt_timeout": "The box got no answer from the MQTT broker at {broker}.",
+      "mqtt_auth": "The MQTT broker at {broker} refused the box's user name or password.",
+      "mqtt_tls": "Home Assistant's MQTT broker ({broker}) uses TLS, which is not detected: enter the broker for the box under Advanced.",
+      "mqtt_host_required": "Enter the broker host under Advanced, or leave all its fields empty.",
+      "mqtt_addon_failed": "Home Assistant could not add the box's MQTT user to the Mosquitto add-on. The Home Assistant log has the details."
     },
     "abort": {
       "already_configured": "This box is already configured.",

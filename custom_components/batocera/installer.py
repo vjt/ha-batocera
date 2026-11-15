@@ -283,13 +283,11 @@ async def async_verify(
                 await _mqtt(conn, CHECK, broker, topic)
 
 
-async def async_install(
-    host: str, password: str, settings: Mapping[str, str] | None = None
-) -> dict[str, str]:
-    """Pair with a box using its root password, then install the daemon.
-    Returns the config entry data."""
+async def async_install(host: str, password: str) -> dict[str, str]:
+    """Pair with a box using its root password, then install the daemon
+    keeping the settings on the box. Returns the config entry data."""
     async with async_pair(host, password) as box:
-        data = await box.async_install(settings)
+        data = await box.async_install()
     await async_verify(data)
     return data
 
