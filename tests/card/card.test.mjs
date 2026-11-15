@@ -15,7 +15,7 @@ const ENTITIES = {
   player: "media_player.arcade", locked: "binary_sensor.arcade_locked",
   playtime: "sensor.arcade_playtime_today", started: "sensor.arcade_session_start",
   limit: "number.arcade_daily_limit", manual: "switch.arcade_manual_lock",
-  screen: "image.arcade_screen",
+  screen: "image.arcade_screen", shutdown: "button.arcade_shut_down", power_on: "button.arcade_power_on",
 };
 const s = (state, attributes = {}) => ({ state, attributes, last_changed: new Date().toISOString() });
 
@@ -336,6 +336,69 @@ test("pause: as far as the box knows", async () => {
   assert.match(t.text(".sub"), /PAUSED/);
   t.$(".pause").click();
   assert.deepEqual(t.sent().at(-1), ["media_player", "media_play", { entity_id: "media_player.arcade" }]);
+});
+
+// Home Assistant offers one power button at a time: Shut down while the box
+// is online, Power on while it is not and its MAC address is known.
+const powerOn = (over = {}) => ({
+  "button.arcade_shut_down": s("unknown"), "button.arcade_power_on": s("unavailable"), ...over,
+});
+const powerOff = (player = "off") => ({
+  "media_player.arcade": s(player),
+  "button.arcade_shut_down": s("unavailable"), "button.arcade_power_on": s("unknown"),
+});
+
+test("power: shut down takes two taps, power on one, each waits for the box", async () => {
+  const t = await mount(idleStates(powerOn()));
+  assert.ok(t.shown(".ctl"));
+  assert.ok(!t.shown(".pause") && !t.shown(".kill"));  // no game
+  assert.equal(t.text(".power"), "⏻ SHUT DOWN");
+  t.$(".power").click();
+  assert.equal(t.text(".power"), "⏻ SURE?");
+  assert.ok(t.$(".power").classList.contains("sure"));
+  assert.deepEqual(t.sent(), []);
+  t.$(".power").click();
+  assert.deepEqual(t.sent(), [["button", "press", { entity_id: "button.arcade_shut_down" }]]);
+  assert.equal(t.text(".power"), "⏻ BYE…");
+  assert.ok(t.$(".power").disabled);
+  t.$(".power").click();
+  assert.equal(t.sent().length, 1);
+
+  await t.set(idleStates(powerOff()));  // gone: the other button
+  assert.equal(t.text(".power"), "⏻ POWER ON");
+  assert.ok(!t.$(".power").disabled);
+  t.$(".power").click();
+  assert.deepEqual(t.sent().at(-1), ["button", "press", { entity_id: "button.arcade_power_on" }]);
+  assert.equal(t.text(".power"), "⏻ WAKING…");
+  assert.ok(t.$(".power").disabled);
+  await t.set(idleStates(powerOff("unavailable")));  // still waiting
+  assert.equal(t.text(".power"), "⏻ WAKING…");
+  await t.set(idleStates(powerOn()));  // back
+  assert.equal(t.text(".power"), "⏻ SHUT DOWN");
+  assert.ok(!t.$(".power").disabled);
+});
+
+test("power: next to pause and kill; nothing to press without a button for it", async () => {
+  const t = await mount(playingStates({}, powerOn()));
+  assert.ok(t.shown(".pause") && t.shown(".kill") && t.shown(".power"));
+  await t.set(idleStates({ ...powerOff(), "button.arcade_power_on": s("unavailable") }));
+  assert.ok(!t.shown(".ctl"));  // off, and no MAC address known: no way to wake it
+  await t.set(idleStates({ ...powerOn(), "button.arcade_shut_down": s("unavailable") }));
+  assert.ok(!t.shown(".ctl"));
+  const kid = await mount(idleStates(powerOn()), { control: false });
+  assert.ok(!kid.shown(".ctl"));
+  await kid.set(idleStates(powerOff()));
+  assert.ok(!kid.shown(".ctl"));
+});
+
+test("power: a refused press gives the button back", async () => {
+  const t = await mount(idleStates(powerOff()));
+  t.services(() => Promise.reject(new Error("no")));
+  t.$(".power").click();
+  assert.equal(t.text(".power"), "⏻ WAKING…");
+  await flush();
+  assert.equal(t.text(".power"), "⏻ POWER ON");
+  assert.ok(!t.$(".power").disabled);
 });
 
 // --- browsing ---------------------------------------------------------
