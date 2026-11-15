@@ -62,6 +62,8 @@ const STRINGS = {
   alreadyPlaying: "ALREADY PLAYING",
   didNotStart: "IT DID NOT START: TRY AGAIN",
   players: (n) => (n === "1" ? "1 player" : `${n} players`),
+  games: (n) => (n === 1 ? "1 GAME" : `${n} GAMES`),
+  found: (n, more) => `${n}${more ? "+" : ""} FOUND`,
   played: (n) => (n === 1 ? "Played once" : `Played ${n} times`),
   lastPlayed: (day) => `last ${day}`,
   playTime: (time) => `${time} in all`,
@@ -75,6 +77,8 @@ const COVERS_AT_ONCE = 4;
 const START_MS = 30000;
 // How long typing must pause before the box's catalog is searched.
 const SEARCH_MS = 250;
+// The most games a search answers with (SEARCH_MAX in browse.py).
+const SEARCH_MAX = 200;
 // The folders of a system: all its games, its favourites, played last.
 const TABS = [["system", "all"], ["fav", "favourites"], ["recent", "recent"]];
 
@@ -278,6 +282,8 @@ const STYLE = `
   .nav { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0 8px; }
   .where { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.5; color: var(--bt-pink);
            text-shadow: 0 0 6px rgba(255, 82, 218, 0.6); }
+  .count { margin-left: 10px; font-size: 10px; white-space: nowrap; color: var(--bt-yellow);
+           text-shadow: 0 0 6px rgba(255, 233, 77, 0.5); }
   .tabs { display: flex; gap: 8px; }
   .tabs button[aria-pressed="true"] { background: var(--bt-cyan); color: var(--bt-bg); }
   .search {
@@ -508,7 +514,7 @@ class BatoceraCard extends HTMLElement {
         <section class="browse">
           <div class="nav">
             <button class="back" type="button">${STRINGS.back}</button>
-            <div class="where"></div>
+            <div class="where"><span class="wt"></span><span class="count"></span></div>
             <div class="tabs">${TABS.map(([kind, label]) =>
               `<button type="button" data-kind="${kind}">${STRINGS[label]}</button>`).join("")}</div>
           </div>
@@ -552,7 +558,7 @@ class BatoceraCard extends HTMLElement {
       shot: $(".shot"), shotImg: $(".shot img"), zoom: $(".zoom"), zoomImg: $(".zoom img"),
       clock: $(".clock"), label: $(".clock .label"), left: $(".clock .left"), ctl: $(".ctl"),
       pause: $(".pause"), kill: $(".kill"), banner: $(".banner"), big: $(".banner .big"),
-      note: $(".banner .note"), back: $(".back"), where: $(".where"), tabs: $(".tabs"),
+      note: $(".banner .note"), back: $(".back"), where: $(".where"), wt: $(".where .wt"), count: $(".where .count"), tabs: $(".tabs"),
       filters: $(".filters"), reset: $(".filters .reset"),
       search: $(".search"), status: $(".status"), statusBig: $(".status .big"),
       statusNote: $(".status .note"), grid: $(".grid"), sheet: $(".sheet"),
@@ -1093,7 +1099,7 @@ class BatoceraCard extends HTMLElement {
     const root = !here.id;
     this.$.back.classList.toggle("hidden", root);
     const title = root ? this._config.name || "" : this._folder ? this._folder.title : here.title;
-    this.$.where.textContent = title;
+    this.$.wt.textContent = title;
     this.$.tabs.classList.toggle("hidden", !system);
     const pressed = kind === "dir" ? "system" : kind;
     for (const tab of this.$.tabs.children) tab.setAttribute("aria-pressed", String(tab.dataset.kind === pressed));
@@ -1123,6 +1129,16 @@ class BatoceraCard extends HTMLElement {
     this.$.statusBig.textContent = big;
     this.$.statusNote.textContent = note;
     this.$.status.classList.toggle("hidden", !big);
+    // How many: what a search or the filters found; else the games listed
+    // or, at the home or a system's top once their facts came, all the
+    // games there, folders down.
+    const listed = shown.filter((item) => item.can_play).length;
+    let count = "";
+    if (text || filtering) {
+      if (!big) count = STRINGS.found(listed, remote && found.length >= SEARCH_MAX);
+    } else if (games && (root || kind === "system")) count = STRINGS.games(Object.keys(games).length);
+    else if (listed) count = STRINGS.games(listed);
+    this.$.count.textContent = count;
     // Shown once the place's games are known; at the home, before, as using
     // one asks for them.
     const home = this._filterPlace === "" && !!this._config.entry_id;

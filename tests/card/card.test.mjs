@@ -342,7 +342,7 @@ test("pause: as far as the box knows", async () => {
 
 test("the top: favourites, recent, then the systems", async () => {
   const t = await mount();
-  assert.equal(t.text(".where"), "Arcade");
+  assert.equal(t.text(".where .wt"), "Arcade");
   assert.ok(!t.shown(".back"));
   assert.ok(!t.shown(".tabs"));
   assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
@@ -356,20 +356,22 @@ test("a system: its games, its tabs, back to the top", async () => {
     type: "media_player/browse_media", entity_id: "media_player.arcade",
     media_content_id: "system:megadrive", media_content_type: "directory",
   });
-  assert.equal(t.text(".where"), "Sega Mega Drive");
+  assert.equal(t.text(".where .wt"), "Sega Mega Drive");
   assert.deepEqual(t.tiles(), ["Bare", "Pokémon Crystal", "Sonic the Hedgehog", "Streets of Rage"]);
+  assert.equal(t.text(".where .count"), "4 GAMES");
   assert.ok(t.shown(".tabs") && t.shown(".back"));
   assert.equal(t.$('.tabs [data-kind="system"]').getAttribute("aria-pressed"), "true");
   t.$('.tabs [data-kind="fav"]').click();
   await flush();
   assert.deepEqual(t.tiles(), ["Sonic the Hedgehog"]);
+  assert.equal(t.text(".where .count"), "1 GAME");
   t.$('.tabs [data-kind="recent"]').click();
   await flush();
   assert.deepEqual(t.tiles(), ["Streets of Rage", "Sonic the Hedgehog"]);
   t.$(".back").click();
   await flush();
   assert.equal(t.tiles().length, 4);
-  assert.equal(t.text(".where"), "Arcade");
+  assert.equal(t.text(".where .wt"), "Arcade");
 });
 
 test("search, without minding case or accents", async () => {
@@ -377,9 +379,11 @@ test("search, without minding case or accents", async () => {
   await t.open("Sega Mega Drive");
   await t.search("POKEMON");
   assert.deepEqual(t.tiles(), ["Pokémon Crystal"]);
+  assert.equal(t.text(".where .count"), "1 FOUND");
   await t.search("zelda");
   assert.deepEqual(t.tiles(), []);
   assert.equal(t.text(".status .big"), "NO MATCH");
+  assert.equal(t.text(".where .count"), "");
   t.$(".back").click();
   await flush();
   assert.equal(t.$(".search").value, "");
@@ -472,7 +476,7 @@ test("systems show their logo, folders a folder tile", async () => {
   const fighter = t.$$(".grid .tile").find((n) => n.querySelector(".tn").textContent === "Fighter");
   assert.ok(fighter.classList.contains("dir"));
   await t.open("Fighter");
-  assert.equal(t.text(".where"), "Fighter");
+  assert.equal(t.text(".where .wt"), "Fighter");
   assert.deepEqual(t.tiles(), ["Killer Instinct"]);
   assert.ok(t.shown(".tabs"));
   t.$('.tabs [data-kind="system"]').click();  // ALL: the whole system again
@@ -480,7 +484,7 @@ test("systems show their logo, folders a folder tile", async () => {
   assert.deepEqual(t.asked("media_player/browse_media").at(-1).media_content_id, "system:mame");
   t.$(".back").click();  // from the system, not from a folder left behind
   await flush();
-  assert.equal(t.text(".where"), "Arcade");
+  assert.equal(t.text(".where .wt"), "Arcade");
   assert.ok(!t.shown(".back"));
 });
 
@@ -592,7 +596,7 @@ test("filters list a system or folder with its sub-folders, without folder tiles
   await t.filter("genre", "Fighting");
   assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "all:mame");
   assert.deepEqual(t.tiles(), ["Killer Instinct"]);  // from the Fighter folder
-  assert.equal(t.text(".where"), "MAME");
+  assert.equal(t.text(".where .wt"), "MAME");
   const asked = t.asked("media_player/browse_media").length;
   await t.filter("decade", "1990");  // the same list: not asked again
   assert.equal(t.asked("media_player/browse_media").length, asked);
@@ -605,7 +609,7 @@ test("filters list a system or folder with its sub-folders, without folder tiles
   await t.filter("rating", "4");
   assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "all:mame:Fighter");
   assert.deepEqual(t.tiles(), ["Killer Instinct"]);
-  assert.equal(t.text(".where"), "Fighter");
+  assert.equal(t.text(".where .wt"), "Fighter");
   t.$('.tabs [data-kind="fav"]').click();  // favourites are flat already
   await flush();
   assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "fav:mame");
@@ -633,7 +637,7 @@ test("home filters: every game, asked on first use, one flat list", async () => 
   assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "all");
   assert.deepEqual(t.tiles(), ["Killer Instinct", "Sonic the Hedgehog", "Streets of Rage", "Super Mario World"]);
   assert.deepEqual(t.systems(), ["MAME", "Sega Mega Drive", "Sega Mega Drive", "Super Nintendo"]);
-  assert.equal(t.text(".where"), "Arcade");
+  assert.equal(t.text(".where .wt"), "Arcade");
   assert.ok(t.shown(".filters .reset") && !t.shown(".back") && !t.shown(".tabs"));
   await t.filter("rating", "4");
   assert.deepEqual(t.tiles(), ["Killer Instinct", "Streets of Rage"]);
@@ -824,7 +828,7 @@ test("a new catalog is read again; a system gone leads back to the top", async (
   folders["system:snes"] = undefined;
   await t.set(idleStates({ "media_player.arcade": s("idle", { catalog: "c2" }) }));
   await flush();
-  assert.equal(t.text(".where"), "Arcade");
+  assert.equal(t.text(".where .wt"), "Arcade");
   assert.equal(t.tiles().length, 4);
 });
 
