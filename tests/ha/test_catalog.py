@@ -297,6 +297,28 @@ async def test_browse(hass, mqtt_mock, setup, hass_ws_client):
         assert (await browse(hass, client, bad))["success"] is False
 
 
+async def test_browse_root_by_name(hass, mqtt_mock, setup, hass_ws_client):
+    # The systems by the name shown, case aside, not in the index's order;
+    # favourites and recently played first.
+    index = [
+        {"name": "mame", "fullname": "Mame"},
+        {"name": "c64", "fullname": "Commodore 64"},
+        {"name": "amiga1200", "fullname": "Amiga AGA"},
+        {"name": "pcengine", "fullname": "PC Engine"},
+        {"name": "nes", "fullname": "NES"},
+        {"name": "atari2600", "fullname": "atari 2600"},
+        {"name": "zx"},  # no full name: its name
+    ]
+    await publish_catalog(hass, index=index, rows={})
+    client = await hass_ws_client(hass)
+    assert children(await browse(hass, client)) == [
+        ("fav", "Favourites"), ("recent", "Recently played"),
+        ("system:amiga1200", "Amiga AGA"), ("system:atari2600", "atari 2600"),
+        ("system:c64", "Commodore 64"), ("system:mame", "Mame"), ("system:nes", "NES"),
+        ("system:pcengine", "PC Engine"), ("system:zx", "zx"),
+    ]
+
+
 def gid(n):
     return f"{n:012x}"
 

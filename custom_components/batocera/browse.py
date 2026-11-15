@@ -1,7 +1,8 @@
 """The box's catalog as a media browser tree.
 
 Content ids:
-    ""                    the root: favourites, recently played, the systems
+    ""                    the root: favourites, recently played, then the
+                          systems by the name shown, case aside
     "fav", "fav:<s>"      favourite games, of all systems or of one
     "recent", "recent:<s>"  games played last, newest first
     "system:<s>"          a system: its sub-folders, then its games at the top
@@ -141,7 +142,7 @@ def browse(box: Box, content_id: str | None, image_url: Callable[[str], str]) ->
                     title,
                     thumbnail=image_url(f"system:{name}") if name in box.logos else None,
                 )
-                for name, title in names.items()
+                for name, title in sorted(names.items(), key=lambda s: (s[1].casefold(), s[0]))
             ),
         ]
         root.children_media_class = MediaClass.DIRECTORY
