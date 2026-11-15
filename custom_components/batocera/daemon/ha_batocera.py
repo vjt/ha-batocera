@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""ha-batocera daemon: publish what Batocera is playing to MQTT, obey stop/lock.
+"""ha-batocera daemon: publish what Batocera is playing to MQTT, obey stop/lock,
+shut the box down when asked, and tell how to wake it.
 
 Standard library only. The broker is reached through the mosquitto_pub and
 mosquitto_sub binaries that Batocera ships; their options (host, port,
@@ -79,6 +80,18 @@ LIVE_LEASE = 60         # seconds of live screen a "watch live" buys; Home Assis
 # Where Batocera's Wayland compositor listens, for grim. The service does not
 # inherit the session's environment, so these are the defaults.
 WAYLAND = {"WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": "/var/run"}
+# A shutdown does what EmulationStation's SHUTDOWN SYSTEM does (see
+# req_shutdown): it quits, saving the gamelists, then the system powers off.
+SHUTDOWN_IDLE_WAIT = 10  # seconds for EmulationStation to be idle after the game
+SHUTDOWN_POLL = 1       # seconds between looks
+ES_QUIT_WAIT = 60       # seconds EmulationStation gets to save and leave
+# What EmulationStation touches before powering off: with it there,
+# emulationstation-standalone does not start it again once it has quit.
+SHUTDOWN_FLAG = Path("/tmp/shutdown.please")
+POWEROFF = ["shutdown", "-P", "-h", "now"]  # what EmulationStation runs then
+NETWORK_EVERY = 30 * 60  # seconds between reports of how to wake the box
+NETWORK_RETRY = 30      # seconds before looking again for a default route
+MAC = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 
 log = logging.getLogger("ha-batocera")
 
@@ -230,6 +243,73 @@ def emulator_from(text):
 def on_off(value):
     """ON, OFF or empty (not known) for a retained flag."""
     return {True: "ON", False: "OFF"}.get(value, "")
+
+
+# --- how to wake the box ------------------------------------------------------
+
+
+def run_text(run, cmd):
+    """A command's standard output, or None when it cannot run or fails."""
+    try:
+        out = run(cmd, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None if out.returncode else (out.stdout or b"").decode(errors="replace")
+
+
+def ip_json(run, *args):
+    """What `ip -j` answers, a list; [] when it cannot tell."""
+    text = run_text(run, ["ip", "-j", *args])
+    try:
+        found = json.loads(text) if text else []
+    except ValueError:
+        return []
+    return [x for x in found if isinstance(x, dict)] if isinstance(found, list) else []
+
+
+def default_interface(run):
+    """The interface of the IPv4 default route the kernel uses (the lowest
+    metric), or None when there is none yet."""
+    routes = [r for r in ip_json(run, "-4", "route", "show", "default")
+              if isinstance(r.get("dev"), str) and r["dev"]]
+    if not routes:
+        return None
+    metric = lambda r: r["metric"] if isinstance(r.get("metric"), int) else 0  # noqa: E731
+    return min(routes, key=metric)["dev"]
+
+
+def interface_addresses(run, iface):
+    """(MAC address, IPv4 broadcast address) of an interface, each "" when
+    it has none."""
+    links = ip_json(run, "addr", "show", "dev", iface)
+    if not links:
+        return "", ""
+    mac = str(links[0].get("address", "")).lower()
+    infos = links[0].get("addr_info")
+    inet = [a for a in infos if isinstance(a, dict) and a.get("family") == "inet"
+            and a.get("broadcast")] if isinstance(infos, list) else []
+    return (mac if MAC.match(mac) else ""), (str(inet[0]["broadcast"]) if inet else "")
+
+
+def wake_on(text):
+    """(Wake-on, Supports Wake-on) from ethtool's output, each "" when it
+    does not say: "g" is waking on the magic packet."""
+    found = dict(re.findall(r"^\s*(Supports Wake-on|Wake-on):\s*(\w*)", text or "", re.M))
+    return found.get("Wake-on", ""), found.get("Supports Wake-on", "")
+
+
+def es_alive():
+    """Whether EmulationStation runs: a process whose program is
+    emulationstation (its comm is cut to 15 characters)."""
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit():
+            try:
+                argv0 = entry.joinpath("cmdline").read_bytes().split(b"\0", 1)[0]
+            except OSError:
+                continue
+            if Path(argv0.decode(errors="replace")).name == "emulationstation":
+                return True
+    return False
 
 
 def es_settings(path=ES_SETTINGS):
@@ -537,6 +617,13 @@ class EsApi:
         if not 200 <= status < 300:
             raise EsError(f"/launch: HTTP {status}")
 
+    def quit(self):
+        """Ask EmulationStation to quit, as its QUIT menu does: it saves the
+        gamelists, then leaves."""
+        status, _ = self.request("/quit")
+        if not 200 <= status < 300:
+            raise EsError(f"/quit: HTTP {status}")
+
 
 def starttime(pid):
     """Kernel start time of a process, or None if it is gone.
@@ -609,7 +696,8 @@ def descendants(pid):
 
 class Daemon:
     def __init__(self, base, env, run=subprocess.run, now=time.time, es=None,
-                 settings=es_settings, hotkeys=HOTKEYS, screen_every=SCREEN_EVERY):
+                 settings=es_settings, hotkeys=HOTKEYS, screen_every=SCREEN_EVERY,
+                 es_alive=es_alive, shutdown_flag=SHUTDOWN_FLAG):
         self.base = base
         self.env = env
         self.run = run
@@ -618,6 +706,11 @@ class Daemon:
         self.settings = settings
         self.hotkeys = hotkeys
         self.screen_every = screen_every
+        self.es_alive = es_alive
+        self.shutdown_flag = shutdown_flag
+        self.shutting_down = None  # the shutdown in progress: {rid, until}
+        self.network_sent = None  # the network report on the broker
+        self.wol_tried = False  # Wake-on-LAN armed once per run, if it was off
         self.screen_sent = None  # hash of the screenshot on the broker
         self.screen_error = None  # the last screenshot failure, logged once
         self.live_until = 0.0  # live frames until then: someone watches
@@ -812,6 +905,7 @@ class Daemon:
             "pause": self.req_pause,
             "refresh": self.req_refresh,
             "search": self.req_search,
+            "shutdown": self.req_shutdown,
         }.get(req.get("op"))
         if handler is None:
             log.warning("unknown request %.80r", payload)
@@ -878,6 +972,8 @@ class Daemon:
         if self.locked:
             log.info("locked: not launching %s", rom.path)
             return self.respond(rid, "locked")
+        if self.shutting_down:
+            return self.respond(rid, "shutting_down")
         if self.launching:
             return self.respond(rid, "busy")
         log.info("launch of %s requested", rom.path)
@@ -966,6 +1062,85 @@ class Daemon:
             return self.respond(rid, "bad_request")
         self.respond(rid, games=search_descriptions(self.catalog, query, system))
 
+    def req_shutdown(self, rid, req):
+        """Shut the box down the way EmulationStation's SHUTDOWN SYSTEM does.
+        That one quits (saving the gamelists: a SIGTERM, as poweroff sends,
+        saves nothing), touches SHUTDOWN_FLAG and runs POWEROFF. Its web API
+        has no shutdown, so: the running game quit first, as stop does; then
+        the flag, /quit, and POWEROFF once EmulationStation has left.
+        Answered once EmulationStation was asked to quit."""
+        if self.shutting_down:
+            return self.respond(rid, "shutting_down")
+        log.info("shutdown requested")
+        if self.launching:  # a game started now would only be quit again
+            if self.launching["rid"]:
+                self.respond(self.launching["rid"], "shutting_down")
+            self.launching = None
+            self.timers.pop("launch", None)
+        if self.game:
+            self.stop()
+        self.shutting_down = {"rid": rid, "until": self.now() + SHUTDOWN_IDLE_WAIT}
+        self.shutdown_step()
+
+    def shutdown_step(self):
+        """Wait for EmulationStation to be idle after the game, then have it
+        quit. Without EmulationStation there is nothing to save."""
+        job = self.shutting_down
+        if not self.es_alive():
+            self.respond(job["rid"])
+            return self.power_off()
+        try:
+            running = self.es.running()
+        except EsError as err:
+            log.warning("shutdown: %s", err)
+            running = None
+        if running is False:
+            try:
+                self.shutdown_flag.touch()
+                self.es.quit()
+            except (OSError, EsError) as err:
+                log.warning("shutdown: %s", err)
+                try:
+                    self.shutdown_flag.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self.shutting_down = None
+                return self.respond(job["rid"],
+                                    "es_unreachable" if isinstance(err, EsError) else "failed")
+            self.respond(job["rid"])
+            job.update(rid=None, until=self.now() + ES_QUIT_WAIT)
+            self.at("shutdown", SHUTDOWN_POLL, self.shutdown_wait)
+        elif self.now() >= job["until"]:
+            log.warning("shutdown: EmulationStation %s",
+                        "is still busy" if running else "does not answer")
+            self.shutting_down = None
+            self.respond(job["rid"], "busy" if running else "es_unreachable")
+        else:
+            self.at("shutdown", SHUTDOWN_POLL, self.shutdown_step)
+
+    def shutdown_wait(self):
+        """Power off once EmulationStation has saved and left; after
+        ES_QUIT_WAIT, anyway: the box was asked to go off."""
+        if self.es_alive():
+            if self.now() < self.shutting_down["until"]:
+                return self.at("shutdown", SHUTDOWN_POLL, self.shutdown_wait)
+            log.warning("EmulationStation still runs %ds after /quit: shutting down anyway",
+                        ES_QUIT_WAIT)
+        self.power_off()
+
+    def power_off(self):
+        log.info("shutting down")
+        try:
+            out = self.run(POWEROFF, capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as err:
+            log.warning("shutdown: %s", err)
+            out = None
+        if out is not None and out.returncode:
+            log.warning("shutdown: rc %d %s", out.returncode,
+                        (out.stderr or b"").decode(errors="replace").strip())
+        if out is None or out.returncode:
+            self.shutting_down = None  # it can be asked again
+
     # --- the catalog --------------------------------------------------------
 
     def refresh_catalog(self, only=None):
@@ -1014,6 +1189,32 @@ class Daemon:
         if value != self.public_web:
             self.public_web = value
             self.pub("public_web_access", value)
+
+    def check_network(self):
+        """Publish how Home Assistant can wake the box, when it changed: the
+        interface of the default route, its MAC and IPv4 broadcast
+        addresses, and its Wake-on-LAN setting. Home Assistant keeps them
+        for when the box is off. Wake-on-LAN off but supported is turned on
+        to the magic packet ("g"), once per run."""
+        iface = default_interface(self.run)
+        if iface is None:  # the network is not up yet
+            self.at("network", NETWORK_RETRY, self.check_network)
+            return
+        self.at("network", NETWORK_EVERY, self.check_network)
+        mac, broadcast = interface_addresses(self.run, iface)
+        wol, supported = wake_on(run_text(self.run, ["ethtool", iface]))
+        if wol != "g" and "g" in supported and not self.wol_tried:
+            self.wol_tried = True
+            log.info("Wake-on-LAN on %s is %r: turning it on", iface, wol)
+            if run_text(self.run, ["ethtool", "-s", iface, "wol", "g"]) is None:
+                log.warning("ethtool -s %s wol g failed", iface)
+            wol, supported = wake_on(run_text(self.run, ["ethtool", iface]))
+        report = json.dumps({"interface": iface, "mac": mac, "broadcast": broadcast,
+                             "wake_on": wol, "supports_wake_on": supported})
+        if report != self.network_sent:
+            log.info("network: %s, Wake-on %s", iface, wol or "unknown")
+            self.pub("network", report)
+            self.network_sent = report
 
     def scheduled_catalog(self):
         # Leave EmulationStation alone during a game, unless there is no
@@ -1068,9 +1269,9 @@ class Daemon:
         log.info("playing %s (%s)", name, system)
         self.publish_game()
         self.at("pausable", PAUSABLE_AFTER, self.check_pausable)
-        if self.locked:
+        if self.locked or self.shutting_down:
             # The hook cannot refuse a launch: its exit code is ignored.
-            log.info("locked: stopping %s", name)
+            log.info("%s: stopping %s", "locked" if self.locked else "shutting down", name)
             self.stop()
 
     def adopt(self):
@@ -1208,6 +1409,7 @@ class Daemon:
         self.adopt()  # first: never say "idle" over a running game
         self.publish_all()
         self.at("catalog", INDEX_WAIT, self.scheduled_catalog)
+        self.at("network", 0, self.check_network)
         if self.screen_every > 0:
             self.at("screen", 0, self.screen)
 

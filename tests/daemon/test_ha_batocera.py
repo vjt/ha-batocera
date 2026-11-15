@@ -49,6 +49,8 @@ class FakeEs:
     def __init__(self):
         self.running = None   # the running game's JSON, or None
         self.launched = []    # bodies of POST /launch
+        self.quits = 0        # GET /quit
+        self.quit_status = 200
         self.media = {}       # path -> bytes
         self.requests = []    # (method, path)
         self.raw = []         # paths as sent, quoted
@@ -90,6 +92,9 @@ class FakeEs:
                 self.launched.append(body.decode())
                 return 200, b""
             return 404, b""
+        if path == "/quit":
+            self.quits += 1
+            return self.quit_status, b""
         if path == "/systems":
             return 200, json.dumps(self.systems).encode()
         if path == "/runningGame":
@@ -1248,6 +1253,236 @@ class RequestTest(unittest.TestCase):
         with self.assertLogs(hb.log, "INFO"):
             self.assertEqual(self.answer(op="refresh")["error"], "es_unreachable")
 
+    POWEROFF = (["shutdown", "-P", "-h", "now"], None)
+
+    def can_shut_down(self):
+        """EmulationStation runs (es_up); its flag goes to a temporary folder.
+        The power off is only recorded, never run."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.d.shutdown_flag = Path(tmp.name) / "shutdown.please"
+        self.es_up = True
+        self.d.es_alive = lambda: self.es_up
+
+    def step(self):
+        """One look later: the commands run then."""
+        self.run.calls.clear()
+        self.clock.t += hb.SHUTDOWN_POLL
+        self.d.run_timers()
+        return list(self.run.calls)
+
+    def errors(self):
+        return [json.loads(p).get("error") for t, p in self.run.published() if "/resp/" in t]
+
+    def test_shutdown_when_idle(self):
+        self.can_shut_down()
+        with self.assertLogs(hb.log, "INFO"):
+            self.assertEqual(self.answer(op="shutdown"), {"id": "0123abcd", "ok": True})
+        # As EmulationStation's SHUTDOWN SYSTEM: the flag that keeps it from
+        # being started again, then it quits, saving the gamelists...
+        self.assertTrue(self.d.shutdown_flag.exists())
+        self.assertEqual(self.fake.quits, 1)
+        self.assertNotIn(self.POWEROFF, self.calls)
+        # ...and the power off once it has left, not before.
+        self.assertNotIn(self.POWEROFF, self.step())
+        self.es_up = False
+        with self.assertLogs(hb.log, "INFO"):
+            self.assertEqual(self.step(), [self.POWEROFF])
+
+    def test_shutdown_quits_the_game_first(self):
+        self.can_shut_down()
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.on_line(self.start_line())
+        self.fake.running = SYNTHETIC["games"]["megadrive"][3]
+        with mock.patch.object(hb.Daemon, "stop") as stop, self.assertLogs(hb.log, "INFO"):
+            self.assertEqual(self.request(op="shutdown"), [])
+            stop.assert_called_once()
+            # A game started meanwhile is quit too.
+            self.d.on_line(self.start_line(rom="/userdata/roms/megadrive/Bare.zip"))
+            self.assertEqual(stop.call_count, 2)
+        # Asked again, or a launch: it is going off.
+        self.assertEqual(self.answer(op="shutdown", id="0123abce")["error"], "shutting_down")
+        self.assertEqual(self.answer(op="launch", game=self.SONIC, id="0123abcf")["error"],
+                         "shutting_down")
+        self.step()
+        self.assertEqual(self.fake.quits, 0)  # not while EmulationStation runs the game
+        self.fake.running = None
+        self.step()
+        self.assertEqual(self.fake.quits, 1)
+        self.assertEqual(self.errors(), [None])  # the first request's answer: ok
+
+    def test_shutdown_ends_a_launch_in_progress(self):
+        self.can_shut_down()
+        self.fake.running = SYNTHETIC["games"]["megadrive"][3]
+        self.request(op="launch", game=self.SONIC)  # waiting for EmulationStation
+        with self.assertLogs(hb.log, "INFO"):
+            self.assertEqual(self.request(op="shutdown", id="0123abce"), [
+                ("batocera/test/resp/0123abcd",
+                 {"id": "0123abcd", "ok": False, "error": "shutting_down"})])
+        self.assertIsNone(self.d.launching)
+        self.assertNotIn("launch", self.d.timers)
+
+    def test_shutdown_without_emulationstation(self):
+        # Not started at boot, or gone: nothing to save, off at once.
+        self.can_shut_down()
+        self.es_up = False
+        with self.assertLogs(hb.log, "INFO"):
+            self.assertEqual(self.answer(op="shutdown"), {"id": "0123abcd", "ok": True})
+        self.assertEqual(self.calls[-1], self.POWEROFF)  # after the answer went out
+        self.assertEqual(self.fake.quits, 0)
+
+    def test_shutdown_when_emulationstation_does_not_leave(self):
+        self.can_shut_down()
+        with self.assertLogs(hb.log, "INFO"):
+            self.answer(op="shutdown")
+        for _ in range(hb.ES_QUIT_WAIT // hb.SHUTDOWN_POLL - 1):
+            self.assertNotIn(self.POWEROFF, self.step())
+        with self.assertLogs(hb.log, "WARNING"):
+            self.assertIn(self.POWEROFF, self.step())
+
+    def test_shutdown_refused(self):
+        self.can_shut_down()
+        self.fake.running = SYNTHETIC["games"]["megadrive"][3]  # it never ends
+        with self.assertLogs(hb.log, "INFO"):
+            self.request(op="shutdown")
+            for _ in range(hb.SHUTDOWN_IDLE_WAIT // hb.SHUTDOWN_POLL):
+                self.clock.t += hb.SHUTDOWN_POLL
+                self.d.run_timers()
+        self.assertEqual(self.errors(), ["busy"])
+        self.fake.running = None
+        self.fake.quit_status = 500
+        with self.assertLogs(hb.log, "WARNING"):
+            self.assertEqual(self.answer(op="shutdown")["error"], "es_unreachable")
+        self.fake.close()
+        with self.assertLogs(hb.log, "WARNING"):
+            self.request(op="shutdown")
+            for _ in range(hb.SHUTDOWN_IDLE_WAIT // hb.SHUTDOWN_POLL):
+                self.clock.t += hb.SHUTDOWN_POLL
+                self.d.run_timers()
+        self.assertEqual(self.errors(), ["es_unreachable"])
+        # Still on, and EmulationStation is started again if it leaves.
+        self.assertFalse(self.d.shutdown_flag.exists())
+        self.assertIsNone(self.d.shutting_down)
+        self.assertNotIn(self.POWEROFF, self.run.calls)
+
+    def test_failed_power_off_can_be_asked_again(self):
+        self.can_shut_down()
+        self.es_up = False
+
+        class NoShutdown(Recorder):
+            def __call__(self, cmd, input=None, **kwargs):
+                super().__call__(cmd, input, **kwargs)
+                if cmd[0] == "shutdown":
+                    raise FileNotFoundError("shutdown")
+                return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        self.d.run = self.run = NoShutdown()
+        with self.assertLogs(hb.log, "WARNING"):
+            self.answer(op="shutdown")
+        self.assertIsNone(self.d.shutting_down)
+
+
+# ip and ethtool, as Batocera 43 answers them (iproute2 6.11, an Intel NIC).
+NET_ROUTES = [{"dst": "default", "gateway": "192.0.2.254", "dev": "eth0", "flags": []}]
+NET_ADDRS = [{
+    "ifindex": 2, "ifname": "eth0", "link_type": "ether", "address": "38:05:25:0a:0b:0c",
+    "broadcast": "ff:ff:ff:ff:ff:ff",
+    "addr_info": [
+        {"family": "inet", "local": "192.0.2.10", "prefixlen": 24, "broadcast": "192.0.2.255"},
+        {"family": "inet6", "local": "fe80::1", "prefixlen": 64, "scope": "link"},
+    ],
+}]
+ETHTOOL = "Settings for eth0:\n\tSupports Wake-on: {}\n\tWake-on: {}\n\tLink detected: yes\n"
+
+
+class NetRecorder(Recorder):
+    """Records like Recorder; ip and ethtool answer as on a box, and
+    ethtool -s sets Wake-on."""
+
+    def __init__(self, wol="g", supported="pumbg", routes=NET_ROUTES, addrs=NET_ADDRS):
+        super().__init__()
+        self.wol, self.supported, self.routes, self.addrs = wol, supported, routes, addrs
+
+    def __call__(self, cmd, input=None, **kwargs):
+        super().__call__(cmd, input, **kwargs)
+        out = b""
+        if cmd[:2] == ["ip", "-j"]:
+            out = json.dumps(self.routes if "route" in cmd else self.addrs).encode()
+        elif cmd[:2] == ["ethtool", "-s"]:
+            self.wol = cmd[-1]
+        elif cmd[0] == "ethtool":
+            out = ETHTOOL.format(self.supported, self.wol).encode()
+        return subprocess.CompletedProcess(cmd, 0, out, b"")
+
+
+class NetworkTest(unittest.TestCase):
+    def check(self, **net):
+        self.run = NetRecorder(**net)
+        self.d = hb.Daemon("batocera/test", {}, run=self.run, now=Clock())
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.check_network()
+        return self.reports()
+
+    def reports(self):
+        return [json.loads(p) for t, p in self.run.published() if t == "batocera/test/network"]
+
+    def test_how_to_wake_the_box(self):
+        self.assertEqual(self.check(), [{
+            "interface": "eth0", "mac": "38:05:25:0a:0b:0c", "broadcast": "192.0.2.255",
+            "wake_on": "g", "supports_wake_on": "pumbg"}])
+        self.assertNotIn(["ethtool", "-s", "eth0", "wol", "g"], [c for c, _ in self.run.calls])
+        self.assertEqual(self.d.timers["network"][0], self.d.now() + hb.NETWORK_EVERY)
+        self.run.calls.clear()
+        self.d.check_network()
+        self.assertEqual(self.reports(), [])  # retained: only when it changes
+
+    def test_wake_on_lan_turned_on_once(self):
+        [report] = self.check(wol="d")
+        self.assertIn(["ethtool", "-s", "eth0", "wol", "g"], [c for c, _ in self.run.calls])
+        self.assertEqual(report["wake_on"], "g")
+        self.run.wol = "d"  # turned off again: that is someone's choice
+        self.run.calls.clear()
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.check_network()
+        self.assertEqual(self.reports()[0]["wake_on"], "d")
+        self.assertNotIn(["ethtool", "-s", "eth0", "wol", "g"], [c for c, _ in self.run.calls])
+
+    def test_a_card_that_cannot_wake(self):
+        [report] = self.check(wol="d", supported="d")
+        self.assertEqual((report["wake_on"], report["supports_wake_on"]), ("d", "d"))
+        self.assertNotIn("-s", [c[1] for c, _ in self.run.calls if c[0] == "ethtool"])
+
+    def test_the_route_the_kernel_uses(self):
+        routes = [{"dst": "default", "dev": "wlan0", "metric": 600},
+                  {"dst": "default", "dev": "eth0", "metric": 100}]
+        self.assertEqual(self.check(routes=routes)[0]["interface"], "eth0")
+        self.assertIn(["ip", "-j", "addr", "show", "dev", "eth0"], [c for c, _ in self.run.calls])
+
+    def test_no_network_yet(self):
+        self.run = NetRecorder(routes=[])
+        self.d = hb.Daemon("batocera/test", {}, run=self.run, now=Clock())
+        self.d.check_network()
+        self.assertEqual(self.reports(), [])
+        self.assertEqual(self.d.timers["network"][0], self.d.now() + hb.NETWORK_RETRY)
+
+    def test_what_cannot_be_told_is_empty(self):
+        class Missing(Recorder):  # no ethtool, and ip says odd things
+            def __call__(self, cmd, input=None, **kwargs):
+                super().__call__(cmd, input, **kwargs)
+                if cmd[0] == "ethtool":
+                    raise FileNotFoundError("ethtool")
+                out = (json.dumps(NET_ROUTES) if "route" in cmd
+                       else '[{"address": "not a mac", "addr_info": "nope"}]')
+                return subprocess.CompletedProcess(cmd, 0, out.encode(), b"")
+
+        self.run = Missing()
+        self.d = hb.Daemon("batocera/test", {}, run=self.run, now=Clock())
+        with self.assertLogs(hb.log, "INFO"):
+            self.d.check_network()
+        self.assertEqual(self.reports(), [{"interface": "eth0", "mac": "", "broadcast": "",
+                                           "wake_on": "", "supports_wake_on": ""}])
+        self.assertEqual(hb.default_interface(Recorder()), None)  # ip answers nothing
+
 
 class DaemonTest(TempDirTest):
     def setUp(self):
@@ -1479,6 +1714,19 @@ echo "batocera/e2e/availability offline"
 exec sleep 600
 """
 
+# Never the host's own network: its ip and ethtool, Wake-on-LAN armed.
+FAKE_IP = f"""#!/bin/sh
+case "$*" in
+    *route*) echo '{json.dumps(NET_ROUTES)}' ;;
+    *) echo '{json.dumps(NET_ADDRS)}' ;;
+esac
+"""
+
+FAKE_ETHTOOL = """#!/bin/sh
+[ "$1" = -s ] && exit 1
+printf 'Settings for %s:\\n\\tSupports Wake-on: pumbg\\n\\tWake-on: g\\n' "$1"
+"""
+
 
 class EndToEndTest(TempDirTest):
     """The real daemon process and hook script, with fake mosquitto clients."""
@@ -1488,7 +1736,8 @@ class EndToEndTest(TempDirTest):
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
         for name, body in (("mosquitto_pub", FAKE_PUB.format(python=sys.executable)),
-                           ("mosquitto_sub", FAKE_SUB)):
+                           ("mosquitto_sub", FAKE_SUB), ("ip", FAKE_IP),
+                           ("ethtool", FAKE_ETHTOOL)):
             (bin_dir / name).write_text(body)
             (bin_dir / name).chmod(0o755)
         # No screenshots: grim would capture the screen of whoever runs this.
@@ -1542,6 +1791,10 @@ class EndToEndTest(TempDirTest):
         self.assertIn("batocera/e2e/cmd", sub_args)
         self.assertIn("batocera/e2e/catalog/index", sub_args)
         self.wait_for(lambda p: any(t == "batocera/e2e/catalog/index" for t, _, _ in p))
+        [network] = [json.loads(d) for t, d, _ in self.published() if t == "batocera/e2e/network"]
+        self.assertEqual(network, {"interface": "eth0", "mac": "38:05:25:0a:0b:0c",
+                                   "broadcast": "192.0.2.255", "wake_on": "g",
+                                   "supports_wake_on": "pumbg"})
 
         self.hook("gameStart", "snes", "libretro", "snes9x", "/userdata/roms/snes/Mario World.sfc")
         self.wait_for(lambda p: ("batocera/e2e/state", "playing", str(self.tmp)) in p)
