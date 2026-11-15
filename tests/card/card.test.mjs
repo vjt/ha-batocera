@@ -66,6 +66,8 @@ const FOLDERS = {
   // What the filters list: a system or folder, sub-folders included.
   "all:megadrive": folder("all:megadrive", "Sega Mega Drive", [BARE, POKEMON, SONIC, SOR]),
   "all:snes": folder("all:snes", "Super Nintendo", [MARIO]),
+  // What the home's filters list: every game of every system, by name.
+  all: folder("all", "Arcade", [BARE, POKEMON, SONIC, SOR, MARIO]),
 };
 const browseMedia = (folders = FOLDERS) => (msg) =>
   folders[msg.media_content_id] ? Promise.resolve(structuredClone(folders[msg.media_content_id]))
@@ -162,9 +164,16 @@ async function mount(states = idleStates(), { control = true, ws = {}, folders =
   // What each filter shows: the select is see-through, over a label.
   const labels = () => ["genre", "decade", "rating"].map((key) =>
     select(key).closest(".pick").querySelector("span").textContent);
+  // A tap on a filter, before a choice: the home asks for its games then.
+  const use = async (key) => {
+    select(key).dispatchEvent(new window.FocusEvent("focusin", { bubbles: true }));
+    await flush();
+  };
+  // The system each game tile says it is from.
+  const systems = () => $$(".grid .tile .ts").map((n) => n.textContent);
   return {
     window, card, root, $, $$, calls, wsCalls, fetched, sent, asked, set, text, shown, tiles, open, type, search,
-    services, select, options, filter, labels,
+    services, select, options, filter, labels, use, systems,
   };
 }
 
@@ -425,6 +434,7 @@ const MAME = {
   "fav:mame": folder("fav:mame", "Favourites · MAME", [KI]),
   "all:mame": folder("all:mame", "MAME", [GALAXIAN, KI]),
   "all:mame:Fighter": folder("all:mame:Fighter", "Fighter", [KI]),
+  all: folder("all", "Arcade", [BARE, GALAXIAN, KI, POKEMON, SONIC, SOR, MARIO]),
 };
 
 test("inside a system, search covers its sub-folders", async () => {
@@ -489,12 +499,14 @@ const FACTS = {
     [GALAXIAN.media_content_id.split(":")[2]]: { genre: "Shoot'em Up / Fixed", year: 1979, rating: 0.6 },
   },
 };
-const gamesOf = (facts = FACTS) => (msg) => Promise.resolve(structuredClone(facts[msg.system] || {}));
+// Without a system: every game, the home's.
+const gamesOf = (facts = FACTS) => (msg) => Promise.resolve(structuredClone(
+  msg.system ? facts[msg.system] || {} : Object.assign({}, ...Object.values(facts))));
 const filtered = (over = {}) => mount(idleStates(), { ws: { "batocera/games": gamesOf() }, ...over });
 
 test("filters: what the system's games have, combined", async () => {
   const t = await filtered();
-  assert.ok(!t.shown(".filters"));  // at the top: none
+  assert.deepEqual(t.asked("batocera/games"), []);  // at the top: the home's, asked once used
   await t.open("Sega Mega Drive");
   await flush();
   assert.deepEqual(t.asked("batocera/games"), [{ type: "batocera/games", entry_id: "e1", system: "megadrive" }]);
@@ -559,13 +571,13 @@ test("filters stay through tabs and search, and reset when the system is left", 
   assert.equal(t.select("genre").value, "Beat'em up");
   t.$(".back").click();
   await flush();
-  assert.ok(!t.shown(".filters"));
+  assert.deepEqual(t.options("genre"), ["ANY GENRE", "LOADING…"]);  // the home's, not asked yet
+  assert.ok(!t.shown(".filters .reset"));
   await t.open("Sega Mega Drive");
   await flush();
   assert.equal(t.select("genre").value, "");
   assert.equal(t.tiles().length, 4);
   assert.equal(t.asked("batocera/games").length, 1);  // same catalog: asked once
-
 });
 
 test("filters list a system or folder with its sub-folders, without folder tiles", async () => {
@@ -594,6 +606,126 @@ test("filters list a system or folder with its sub-folders, without folder tiles
   await flush();
   assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "fav:mame");
   assert.equal(t.select("rating").value, "4");
+});
+
+test("home filters: every game, asked on first use, one flat list", async () => {
+  const t = await filtered({ folders: MAME });
+  assert.ok(t.shown(".filters") && !t.shown(".filters .reset"));
+  assert.deepEqual(t.labels(), ["GENRE", "DECADE", "RATING"]);
+  assert.deepEqual(t.options("genre"), ["ANY GENRE", "LOADING…"]);
+  await t.open("Super Nintendo");
+  await flush();
+  t.$(".back").click();
+  await flush();
+  // Not on a visit: a system's own only.
+  assert.deepEqual(t.asked("batocera/games"), [{ type: "batocera/games", entry_id: "e1", system: "snes" }]);
+  await t.use("genre");
+  assert.deepEqual(t.asked("batocera/games").at(-1), { type: "batocera/games", entry_id: "e1" });
+  assert.deepEqual(t.options("genre"), ["ANY GENRE", "Beat'em up", "Fighting", "Platform", "Shoot'em Up"]);
+  assert.deepEqual(t.options("decade"), ["ANY DECADE", "1970s", "1990s", "2000s"]);
+  assert.deepEqual(t.options("rating"), ["ANY RATING", "★★★★", "★★★", "★★", "★"]);
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo", "MAME"]);
+  await t.filter("decade", "1990");
+  assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "all");
+  assert.deepEqual(t.tiles(), ["Killer Instinct", "Sonic the Hedgehog", "Streets of Rage", "Super Mario World"]);
+  assert.deepEqual(t.systems(), ["MAME", "Sega Mega Drive", "Sega Mega Drive", "Super Nintendo"]);
+  assert.equal(t.text(".where"), "Arcade");
+  assert.ok(t.shown(".filters .reset") && !t.shown(".back") && !t.shown(".tabs"));
+  await t.filter("rating", "4");
+  assert.deepEqual(t.tiles(), ["Killer Instinct", "Streets of Rage"]);
+  await t.filter("genre", "Platform");
+  assert.deepEqual(t.tiles(), []);
+  assert.equal(t.text(".status .big"), "NO MATCH");
+  assert.equal(t.text(".status .note"), "THE FILTERS LEAVE NO GAME");
+  t.$(".filters .reset").click();
+  await flush();
+  assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "");
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo", "MAME"]);
+  assert.deepEqual(t.labels(), ["GENRE", "DECADE", "RATING"]);
+  assert.ok(!t.shown(".filters .reset") && !t.shown(".status"));
+  // Used again, same catalog: neither the facts nor the list are asked again.
+  const browsed = t.asked("media_player/browse_media").length;
+  await t.use("genre");
+  await t.filter("genre", "Fighting");
+  assert.equal(t.asked("batocera/games").length, 2);
+  assert.equal(t.asked("media_player/browse_media").length, browsed);
+  assert.deepEqual(t.tiles(), ["Killer Instinct"]);
+  // A game from the list opens as from its system.
+  await t.open("Killer Instinct");
+  assert.ok(t.shown(".sheet"));
+  assert.equal(t.text(".stitle"), "Killer Instinct");
+  assert.equal(t.text(".ssystem"), "MAME");
+});
+
+test("home filters and search: names matched here, among every game", async () => {
+  const t = await filtered();
+  await t.search("s");  // nothing set: Home Assistant's search
+  assert.deepEqual(t.tiles(), ["Pokémon Crystal", "Sonic the Hedgehog", "Streets of Rage", "Super Mario World"]);
+  assert.deepEqual(t.systems(), ["Sega Mega Drive", "Sega Mega Drive", "Sega Mega Drive", "Super Nintendo"]);
+  await t.use("decade");
+  await t.filter("decade", "1990");  // the query stays
+  assert.deepEqual(t.tiles(), ["Sonic the Hedgehog", "Streets of Rage", "Super Mario World"]);
+  await t.search("street");
+  assert.deepEqual(t.tiles(), ["Streets of Rage"]);
+  assert.equal(t.asked("media_player/search_media").length, 1);
+  t.$(".filters .reset").click();  // none set: Home Assistant's search again
+  await flush();
+  assert.equal(t.asked("media_player/search_media").length, 2);
+  assert.deepEqual(t.tiles(), ["Streets of Rage"]);
+});
+
+test("the home and each system have filters of their own", async () => {
+  const t = await filtered({ folders: MAME });
+  await t.open("Sega Mega Drive");
+  await flush();
+  await t.filter("genre", "Platform");
+  t.$(".back").click();  // not carried out: the systems, nothing set
+  await flush();
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo", "MAME"]);
+  assert.deepEqual(t.labels(), ["GENRE", "DECADE", "RATING"]);
+  assert.ok(!t.shown(".filters .reset"));
+  await t.use("genre");
+  assert.deepEqual(t.options("genre"), ["ANY GENRE", "Beat'em up", "Fighting", "Platform", "Shoot'em Up"]);
+  await t.filter("genre", "Platform");
+  assert.deepEqual(t.tiles(), ["Pokémon Crystal", "Sonic the Hedgehog"]);
+  t.$(".filters .reset").click();
+  await flush();
+  await t.open("Super Nintendo");  // not carried in: the system's own choices, nothing set
+  await flush();
+  assert.deepEqual(t.options("genre"), ["ANY GENRE"]);
+  assert.deepEqual(t.options("decade"), ["ANY DECADE", "1990s"]);
+  assert.deepEqual(["genre", "decade", "rating"].map((k) => t.select(k).value), ["", "", ""]);
+  assert.deepEqual(t.tiles(), ["Super Mario World"]);
+  assert.deepEqual(t.systems(), []);  // one system: no need to say
+  await t.filter("decade", "1990");
+  t.$(".back").click();
+  await flush();
+  assert.equal(t.select("decade").value, "");
+  assert.equal(t.tiles().length, 5);
+  // The favourites of all systems have none.
+  await t.open("Favourites");
+  assert.ok(!t.shown(".filters"));
+});
+
+test("home filters: a new catalog is asked again only while one is set", async () => {
+  const catalog = (c) => idleStates({ "media_player.arcade": s("idle", { catalog: c }) });
+  const home = (t) => t.asked("batocera/games").filter((m) => !m.system).length;
+  const every = (t) => t.asked("media_player/browse_media").filter((m) => m.media_content_id === "all").length;
+  const t = await filtered({ folders: MAME });
+  await t.use("genre");
+  await t.set(catalog("c2"));
+  await flush();
+  assert.equal(home(t), 1);  // nothing set: on the next use
+  assert.equal(t.options("genre").length, 5);  // the old ones serve
+  await t.use("genre");
+  assert.equal(home(t), 2);
+  await t.filter("genre", "Platform");
+  assert.equal(every(t), 1);
+  await t.set(catalog("c3"));
+  await flush();
+  assert.equal(home(t), 3);  // set: asked with the catalog, and the list too
+  assert.equal(every(t), 2);
+  assert.deepEqual(t.tiles(), ["Pokémon Crystal", "Sonic the Hedgehog"]);
 });
 
 test("filters: a new catalog is asked again, and a value gone goes back to any", async () => {
@@ -673,6 +805,7 @@ test("no catalog yet, or the box answers nothing", async () => {
   const t = await mount(idleStates(), { folders: empty });
   assert.equal(t.text(".status .big"), "NO CATALOG YET");
   assert.deepEqual(t.tiles(), []);
+  assert.ok(!t.shown(".filters"));
   const u = await mount(idleStates(), { folders: {} });
   assert.equal(u.text(".status .big"), "NO CATALOG YET");
 });
