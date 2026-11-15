@@ -61,6 +61,10 @@ const STRINGS = {
   quits: (title) => `QUITS ${title}`,
   alreadyPlaying: "ALREADY PLAYING",
   didNotStart: "IT DID NOT START: TRY AGAIN",
+  players: (n) => (n === "1" ? "1 player" : `${n} players`),
+  played: (n) => (n === 1 ? "Played once" : `Played ${n} times`),
+  lastPlayed: (day) => `last ${day}`,
+  playTime: (time) => `${time} in all`,
 };
 
 // How long the kill button waits for its second tap.
@@ -97,6 +101,23 @@ const clock = (seconds) => {
 };
 // 1:05 for 65 minutes, for the time left.
 const hm = (minutes) => `${Math.floor(minutes / 60)}:${pad(minutes % 60)}`;
+// 1h 05m or 25m, for the time a game was played in all.
+const duration = (seconds) => {
+  const m = Math.max(1, Math.round(seconds / 60));
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${pad(m % 60)}m`;
+};
+// EmulationStation's local time, "20261102T183000", as that day; undefined
+// when it is not one.
+const esDay = (text) => {
+  const m = /^(\d{4})(\d{2})(\d{2})T/.exec(text || "");
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : undefined;
+};
+// A node says the parts there are, joined; its text is set only when it
+// changes, not to lose how far a box of it was scrolled.
+const put = (node, parts, sep = " · ") => {
+  const text = parts.filter(Boolean).join(sep);
+  if (node.textContent !== text) node.textContent = text;
+};
 // For search: lower case, without accents.
 const fold = (text) => (text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 // "system:snes", "fav:snes" -> ["system", "snes"]; "fav" -> ["fav", ""].
@@ -342,9 +363,26 @@ const STYLE = `
     background: var(--bt-panel); border: 2px solid var(--bt-cyan);
     box-shadow: 0 0 24px rgba(62, 244, 255, 0.35);
   }
-  .sheet .art { width: min(60vw, 200px); margin: 0 auto; border: 2px solid var(--bt-edge); }
+  /* What the game is scrolls, when a short screen must; the warnings and
+     PRESS START below it stay in sight. */
+  .sbody { flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+  .sheet .panel > :not(.sbody), .sbody > * { flex: none; }
+  /* The cover gives way on a short screen: on a phone the rest fits under it. */
+  .sheet .art { width: min(60vw, 200px, 24vh); width: min(60vw, 200px, 24dvh); margin: 0 auto;
+                border: 2px solid var(--bt-edge); }
   .stitle { font-size: 13px; line-height: 1.6; color: var(--bt-cyan); text-shadow: 0 0 6px rgba(62, 244, 255, 0.6); }
   .ssystem { color: var(--bt-dim); }
+  .sinfo { display: flex; flex-direction: column; gap: 4px; }
+  .sfacts, .scredits, .splayed { font-size: 13px; line-height: 1.4; color: var(--bt-dim); }
+  /* A few lines, the rest a scroll away inside its own box. */
+  .sdesc {
+    max-height: 5.8em; overflow-y: auto; overscroll-behavior: contain; padding: 8px 10px;
+    font-size: 13px; line-height: 1.45; text-align: left; white-space: pre-line; overflow-wrap: anywhere;
+    color: var(--bt-fg); background: var(--bt-bg); border: 2px solid var(--bt-edge);
+    scrollbar-width: thin; scrollbar-color: var(--bt-edge) transparent;
+  }
+  .sdesc:focus-visible { outline: 2px solid var(--bt-yellow); outline-offset: 2px; }
+  .sinfo > :empty, .sdesc:empty { display: none; }
   .swarn { color: var(--bt-yellow); font-weight: 600; }
   .smsg { color: var(--bt-red); }
   .swarn:empty, .smsg:empty { display: none; }
@@ -488,9 +526,17 @@ class BatoceraCard extends HTMLElement {
         </div>
         <div class="sheet hidden" role="dialog" aria-modal="true">
           <div class="panel">
-            <div class="art"><span class="nosignal">${STRINGS.noSignal}</span><img alt=""></div>
-            <div class="stitle"></div>
-            <div class="ssystem"></div>
+            <div class="sbody">
+              <div class="art"><span class="nosignal">${STRINGS.noSignal}</span><img alt=""></div>
+              <div class="stitle"></div>
+              <div class="sinfo">
+                <div class="ssystem"></div>
+                <div class="sfacts"></div>
+                <div class="scredits"></div>
+                <div class="splayed"></div>
+              </div>
+              <div class="sdesc" tabindex="0"></div>
+            </div>
             <div class="swarn"></div>
             <div class="smsg"></div>
             <div class="sbtns">
@@ -510,8 +556,9 @@ class BatoceraCard extends HTMLElement {
       filters: $(".filters"), reset: $(".filters .reset"),
       search: $(".search"), status: $(".status"), statusBig: $(".status .big"),
       statusNote: $(".status .note"), grid: $(".grid"), sheet: $(".sheet"),
-      sart: $(".sheet .art"), simg: $(".sheet .art img"), stitle: $(".stitle"),
-      ssystem: $(".ssystem"), swarn: $(".swarn"), smsg: $(".smsg"), start: $(".start"),
+      sbody: $(".sbody"), sart: $(".sheet .art"), simg: $(".sheet .art img"), stitle: $(".stitle"),
+      ssystem: $(".ssystem"), sfacts: $(".sfacts"), scredits: $(".scredits"), splayed: $(".splayed"),
+      sdesc: $(".sdesc"), swarn: $(".swarn"), smsg: $(".smsg"), start: $(".start"),
       cancel: $(".cancel"),
     };
     this.$.pause.addEventListener("click", () => this._pause());
@@ -792,7 +839,7 @@ class BatoceraCard extends HTMLElement {
   // --- the launch sheet -------------------------------------------------
 
   _pick(item) {
-    this._sheet = { item };
+    const sheet = (this._sheet = { item });
     const art = this.$.sart;
     art.classList.remove("loaded", "none");
     this.$.simg.removeAttribute("src");
@@ -802,8 +849,42 @@ class BatoceraCard extends HTMLElement {
     } else {
       art.classList.add("none");
     }
+    this._about(sheet);
     this._renderSheet();
+    this.$.sbody.scrollTop = 0;
+    this.$.sdesc.scrollTop = 0;
     this.$.start.focus();
+  }
+
+  // What the sheet tells of the game: the catalog's facts (batocera/games,
+  // for this one game) at once, and what the box adds (batocera/info: the
+  // description, who made it, the time played in all) once Home Assistant
+  // has it. Each is shown when it comes, if the sheet is still this game's;
+  // without them (an old box, a busy one) the sheet shows the rest.
+  _about(sheet) {
+    const entry = this._config.entry_id;
+    if (!entry || !this._hass.callWS) return;
+    const game = sheet.item.media_content_id.split(":")[2];  // game:<system>:<id>
+    const ask = (type, keep) => Promise.resolve(this._hass.callWS({ type, entry_id: entry, game }))
+      .then((answer) => {
+        if (this._sheet !== sheet || !answer) return;
+        keep(answer);
+        this._renderSheet();
+      })
+      .catch(() => {});
+    ask("batocera/games", (games) => { sheet.facts = games[game]; });
+    ask("batocera/info", (info) => { sheet.info = info; });
+  }
+
+  // A day as the user's language writes it, short: "Nov 2, 2026".
+  _day(date) {
+    const locale = this._hass.locale;
+    const options = { year: "numeric", month: "short", day: "numeric" };
+    try {
+      return date.toLocaleDateString((locale && locale.language) || this._hass.language, options);
+    } catch {  // a language the browser does not know
+      return date.toLocaleDateString(undefined, options);
+    }
   }
 
   _close() {
@@ -853,6 +934,18 @@ class BatoceraCard extends HTMLElement {
     const same = playing && attr.media_content_id === id && !sheet.until;
     this.$.stitle.textContent = sheet.item.title;
     this.$.ssystem.textContent = this._systems[system.split(":")[0]] || "";
+    // What the game is, from what came; nothing for what did not.
+    const facts = sheet.facts || {};
+    const info = sheet.info || {};
+    const { genre, stars } = traits(facts);
+    put(this.$.sfacts, [facts.year > 0 && facts.year, genre && facts.genre,
+      facts.players && STRINGS.players(facts.players), stars && "★".repeat(stars)]);
+    put(this.$.scredits, [...new Set([info.developer, info.publisher])], " / ");
+    const last = esDay(facts.lastplayed);
+    put(this.$.splayed, [facts.playcount > 0 && STRINGS.played(facts.playcount),
+      last && STRINGS.lastPlayed(this._day(last)),
+      info.gametime > 0 && STRINGS.playTime(duration(info.gametime))]);
+    put(this.$.sdesc, [info.desc]);
     this.$.swarn.textContent = same ? STRINGS.alreadyPlaying
       : playing && !sheet.until ? STRINGS.quits(attr.media_title || "") : "";
     let why = "";
