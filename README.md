@@ -21,8 +21,9 @@ the TV live, quit a stuck game, and set daily playtime limits.
 - **A Batocera page** in Home Assistant's sidebar: the box's games with their
   covers, favourites, recently played, one tile per system and per ROM folder,
   a search that works at every level, and the games filtered by genre,
-  decade and rating, in a system or across all of them. Tap a game, PRESS
-  START, and it starts on the TV.
+  decade and rating, in a system or across all of them. Tap a game to see
+  what it is (year, genre, players, rating, who made it, how much it was
+  played, its description), PRESS START, and it starts on the TV.
 - **What is playing**: game, system, emulator, cover, since when, and the
   minutes played today.
 - **The TV screen**, menus included: a screenshot every 15 seconds, and live
