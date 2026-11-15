@@ -261,6 +261,20 @@ asked again, for its new total. When the box cannot say (offline, busy, or a
 daemon before 0.8, which answers `bad_request`), `batocera/info` answers
 `{}`, nothing is kept, and the dialog shows the catalog's facts alone.
 
+The page's search finds games by name and, apart, by description. The
+media player's search (`media_player/search_media`) answers `result`, the
+games whose name holds the query, as any media search, and
+`in_description`, the games whose description holds it and whose name does
+not, each by name and at most 200; the page lists the second under an IN
+THE DESCRIPTION heading. The descriptions never leave the box: the daemon
+keeps them in memory with the catalog, folded as a search compares text (no
+case, no accents, every run of blanks as one space), and Home Assistant
+asks it through the `search` request below, for a query of 3 to 100
+characters, of the system the search starts from or of all. When the box
+cannot answer (offline, a daemon without the request, which answers
+`bad_request`, or no answer within 3 seconds), `in_description` is empty and
+the name matches go out alone.
+
 ### Requests
 
 Home Assistant sends requests on `req`, as JSON with an `id` of 8 to 32
@@ -274,6 +288,7 @@ bigger than 4 KB, or without a valid id, are dropped.
 | `launch` | `system`, `game` | nothing more, once EmulationStation was asked to launch it |
 | `pause` | `paused`: `true` or `false` | `paused`: what the daemon believes now |
 | `refresh` | none | nothing more; the catalog is read again |
+| `search` | `query` (text), optionally `system` | `games`: the ids of the games (of that system, or of all) whose description holds the query and whose name does not, by name, at most 200; none for a query under 3 characters. Accents, case and line breaks aside; from the descriptions the daemon keeps with the catalog, EmulationStation is not asked |
 
 Answers are `{"id": ..., "ok": true, ...}` or `{"id": ..., "ok": false,
 "error": ...}`, where the error is one of `bad_request`, `unknown_game`,
