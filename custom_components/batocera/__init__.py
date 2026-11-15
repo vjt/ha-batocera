@@ -18,9 +18,10 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
 from . import installer, mqtt_setup
-from .box import Box
+from .box import Box, Game
 from .const import CONF_MQTT_LOGIN, CONF_PRIVATE_KEY, DOMAIN
 from .covers import CoverCache
+from .info import InfoCache
 from .live import LiveView
 
 PLATFORMS = [
@@ -46,6 +47,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     websocket_api.async_register_command(hass, ws_access)
     websocket_api.async_register_command(hass, ws_games)
+    websocket_api.async_register_command(hass, ws_info)
     hass.http.register_view(LiveView())
     await async_setup_dashboard(hass)
     return True
@@ -75,25 +77,64 @@ def ws_access(
         connection.send_result(msg["id"], {"control": box.may_control(connection.user)})
 
 
+def _facts(game: Game) -> dict[str, Any]:
+    """What batocera/games tells of a game. Many games say nothing of their
+    players, and few were played: those are left out when empty."""
+    facts: dict[str, Any] = {"genre": game.genre, "year": game.year, "rating": game.rating}
+    if game.players:
+        facts["players"] = game.players
+    if game.playcount:
+        facts["playcount"] = game.playcount
+    if game.lastplayed:
+        facts["lastplayed"] = game.lastplayed
+    return facts
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "batocera/games",
         vol.Required("entry_id"): str,
         vol.Optional("system"): str,
+        vol.Optional("game"): str,
     }
 )
 @callback
 def ws_games(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Genre, year and rating of a system's games, or without a system of
-    every game, by game id: the page's filters need them, and the media
-    browser does not carry them."""
+    """Genre, year, rating, players and plays of a system's games, without a
+    system of every game, or of one game, by game id: the page's filters and
+    its launch dialog need them, and the media browser does not carry them."""
     if box := _ws_box(hass, connection, msg):
-        games = box.system_games(msg["system"]) if "system" in msg else box.games.values()
-        connection.send_result(
-            msg["id"], {g.id: {"genre": g.genre, "year": g.year, "rating": g.rating} for g in games}
-        )
+        if "game" in msg:
+            game = box.games.get(msg["game"])
+            games = [game] if game and msg.get("system", game.system) == game.system else []
+        else:
+            games = box.system_games(msg["system"]) if "system" in msg else box.games.values()
+        connection.send_result(msg["id"], {g.id: _facts(g) for g in games})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "batocera/info",
+        vol.Required("entry_id"): str,
+        vol.Required("game"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_info(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """What the box tells of a game beyond the catalog, for the launch dialog:
+    desc, developer, publisher, gametime (seconds played in all), each left
+    out when there is none. Empty when the box cannot say now: offline, busy,
+    or a daemon too old to know the request."""
+    if not (box := _ws_box(hass, connection, msg)):
+        return
+    if (game := box.games.get(msg["game"])) is None:
+        connection.send_error(msg["id"], websocket_api.ERR_NOT_FOUND, "No such game")
+        return
+    connection.send_result(msg["id"], await box.game_info.async_get(game) or {})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> bool:
@@ -101,7 +142,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> 
         raise ConfigEntryNotReady("MQTT is not available")
     box = Box(hass, entry)
     box.covers = CoverCache(hass, box, _covers_dir(hass, entry))
+    box.game_info = InfoCache(hass, box, _covers_dir(hass, entry))  # kept with the covers
     hass.async_add_executor_job(box.covers.prune)  # covers more than a week old
+    hass.async_add_executor_job(box.game_info.prune)  # and what the box told of games
     if CONF_PRIVATE_KEY in entry.data:  # installed from Home Assistant
         _keep_daemon_updated(hass, entry, box)
     _warn_about_public_web(hass, entry, box)

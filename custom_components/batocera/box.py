@@ -242,6 +242,7 @@ class Box:
         self.logos: dict[str, bytes] = {}  # system name -> contained_logo()
         self.logo_ids: dict[str, str] = {}  # system name -> hash of its logo
         self.covers: Any = None  # a covers.CoverCache, set up with the entry
+        self.game_info: Any = None  # an info.InfoCache, likewise
 
         # Limits, set from the config entities. 0 minutes means no daily
         # limit; equal bounds mean no time window.

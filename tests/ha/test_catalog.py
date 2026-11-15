@@ -91,34 +91,36 @@ async def test_folder_from_the_ninth_column(hass, mqtt_mock, setup):
 async def test_games_for_the_filters(hass, mqtt_mock, setup, hass_ws_client):
     rows = {"megadrive": [
         [SONIC, "Sonic the Hedgehog", 1991, "Platform / Run & Jump", "1", 3, 12, "", "", 0.75],
-        [SOR, "Streets of Rage", 1991, "Beat'em up", "1-2", 0, 0, "", "", 1.5],  # no rating
+        [SOR, "Streets of Rage", 1991, "Beat'em up", "1-2", 0, 1, "20261104T200000", "", 1.5],
         [BARE, "Bare", None, "None", "", 0, 0, "", ""],  # a daemon before 0.7
     ], "snes": [[MARIO, "Super Mario World", 1990, "", "", 0, 0, "", "", True]]}
     await publish_catalog(hass, rows=rows)
     client = await hass_ws_client(hass)
 
-    async def games(system=None, entry_id=setup.entry_id):
+    async def games(system=None, entry_id=setup.entry_id, game=None):
         msg = {"type": "batocera/games", "entry_id": entry_id}
-        await client.send_json_auto_id(msg | ({"system": system} if system else {}))
+        msg |= ({"system": system} if system else {}) | ({"game": game} if game else {})
+        await client.send_json_auto_id(msg)
         return await client.receive_json()
 
-    assert (await games("megadrive"))["result"] == {
-        SONIC: {"genre": "Platform / Run & Jump", "year": 1991, "rating": 0.75},
-        SOR: {"genre": "Beat'em up", "year": 1991, "rating": None},
-        BARE: {"genre": "None", "year": None, "rating": None},
-    }
-    assert (await games("snes"))["result"] == {
-        MARIO: {"genre": "", "year": 1990, "rating": None}  # true is no rating
-    }
+    # Players, play count and last played only when there are.
+    sonic = {"genre": "Platform / Run & Jump", "year": 1991, "rating": 0.75, "players": "1",
+             "playcount": 12}
+    sor = {"genre": "Beat'em up", "year": 1991, "rating": None, "players": "1-2",  # 1.5: no rating
+           "playcount": 1, "lastplayed": "20261104T200000"}
+    bare = {"genre": "None", "year": None, "rating": None}
+    mario = {"genre": "", "year": 1990, "rating": None}  # true is no rating
+    assert (await games("megadrive"))["result"] == {SONIC: sonic, SOR: sor, BARE: bare}
+    assert (await games("snes"))["result"] == {MARIO: mario}
     assert (await games("nes"))["result"] == {}
     assert (await games("megadrive", "nope"))["error"]["code"] == "not_found"
     # Without a system, every game: the home's filters.
-    assert (await games())["result"] == {
-        SONIC: {"genre": "Platform / Run & Jump", "year": 1991, "rating": 0.75},
-        SOR: {"genre": "Beat'em up", "year": 1991, "rating": None},
-        BARE: {"genre": "None", "year": None, "rating": None},
-        MARIO: {"genre": "", "year": 1990, "rating": None},
-    }
+    assert (await games())["result"] == {SONIC: sonic, SOR: sor, BARE: bare, MARIO: mario}
+    # One game: the launch dialog's.
+    assert (await games(game=SOR))["result"] == {SOR: sor}
+    assert (await games("megadrive", game=SOR))["result"] == {SOR: sor}
+    assert (await games("snes", game=SOR))["result"] == {}  # not of that system
+    assert (await games(game="0" * 12))["result"] == {}
 
 
 SVG = b'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"/>'
@@ -554,3 +556,92 @@ async def test_cover_errors(hass, mqtt_mock, setup, daemon):
     daemon.answers["cover"] = {"ok": True, "jpeg": base64.b64encode(b"GIF89a").decode()}
     assert await box.covers.async_get(sonic) is None
     assert len(daemon.requests) == 3
+
+
+INFO = {"desc": "Sonic runs fast.\nDr. Robotnik waits.", "developer": "Sonic Team",
+        "publisher": "Sega", "gametime": 4321}
+
+
+async def info(client, game, entry_id):
+    await client.send_json_auto_id({"type": "batocera/info", "entry_id": entry_id, "game": game})
+    return await client.receive_json()
+
+
+async def test_info(hass, mqtt_mock, setup, daemon, hass_ws_client):
+    await publish_catalog(hass)
+    fire(hass, "availability", "online")
+    await hass.async_block_till_done()
+    daemon.answers["info"] = {"ok": True, **INFO, "junk": [1]}
+    client = await hass_ws_client(hass)
+    assert (await info(client, SONIC, setup.entry_id))["result"] == INFO  # no junk
+    [req] = daemon.requests
+    assert (req["op"], req["system"], req["game"]) == ("info", "megadrive", SONIC)
+
+    # Again: from memory. After a restart: from disk. Never asked twice.
+    assert (await info(client, SONIC, setup.entry_id))["result"] == INFO
+    box = setup.runtime_data
+    box.game_info._memory.clear()
+    assert (await info(client, SONIC, setup.entry_id))["result"] == INFO
+    assert len(daemon.requests) == 1
+    path = Path(hass.config.cache_path("batocera", setup.entry_id)) / f"{SONIC}.json"
+    assert json.loads(path.read_text())["info"] == INFO
+
+    # Played since: the catalog says so, and the total is asked again.
+    rows = json.loads(json.dumps(ROWS))
+    rows["megadrive"][1][7] = "20261115T200000"  # Sonic's last played
+    await publish_catalog(hass, rows=rows)
+    daemon.answers["info"] = {"ok": True, **INFO, "gametime": 5000}
+    assert (await info(client, SONIC, setup.entry_id))["result"]["gametime"] == 5000
+    assert len(daemon.requests) == 2
+    box.game_info._memory.clear()
+    assert (await info(client, SONIC, setup.entry_id))["result"]["gametime"] == 5000
+    assert len(daemon.requests) == 2
+
+    # A week later the disk copy is stale: asked again; and pruned.
+    box.game_info._memory.clear()
+    old = time.time() - 8 * 24 * 3600
+    os.utime(path, (old, old))
+    assert (await info(client, SONIC, setup.entry_id))["result"]["gametime"] == 5000
+    assert len(daemon.requests) == 3
+    os.utime(path, (old, old))
+    await hass.async_add_executor_job(box.game_info.prune)
+    assert not path.exists()
+
+    # A game the box does not have, a box that is not there.
+    assert (await info(client, "0" * 12, setup.entry_id))["error"]["code"] == "not_found"
+    assert (await info(client, SONIC, "nope"))["error"]["code"] == "not_found"
+    assert len(daemon.requests) == 3
+
+
+async def test_info_from_an_old_or_busy_box(hass, mqtt_mock, setup, daemon, hass_ws_client):
+    await publish_catalog(hass)
+    client = await hass_ws_client(hass)
+    path = Path(hass.config.cache_path("batocera", setup.entry_id)) / f"{SONIC}.json"
+    assert (await info(client, SONIC, setup.entry_id))["result"] == {}  # offline: not asked
+    assert daemon.requests == []
+    fire(hass, "availability", "online")
+    await hass.async_block_till_done()
+    # A daemon before 0.8 does not know the request; a busy one cannot answer.
+    for error in ("bad_request", "es_unreachable"):
+        daemon.answers["info"] = {"ok": False, "error": error}
+        assert (await info(client, SONIC, setup.entry_id))["result"] == {}
+    assert len(daemon.requests) == 2  # nothing kept: asked each time
+    assert not path.exists()
+    # Unscraped and never played: nothing to say, kept like any answer.
+    daemon.answers["info"] = {"ok": True, "desc": "  ", "developer": 3, "gametime": True}
+    assert (await info(client, SONIC, setup.entry_id))["result"] == {}
+    assert (await info(client, SONIC, setup.entry_id))["result"] == {}
+    assert len(daemon.requests) == 3
+    assert json.loads(path.read_text()) == {"lastplayed": "20261102T183000", "info": {}}
+
+
+async def test_info_fetched_once_while_asked_many_times(hass, mqtt_mock, setup, daemon):
+    await publish_catalog(hass)
+    fire(hass, "availability", "online")
+    await hass.async_block_till_done()
+    daemon.answers["info"] = {"ok": True, **INFO}
+    box = setup.runtime_data
+    game = box.games[SOR]
+    results = await asyncio.gather(*(box.game_info.async_get(game) for _ in range(5)))
+    assert results == [INFO] * 5
+    assert len(daemon.requests) == 1
