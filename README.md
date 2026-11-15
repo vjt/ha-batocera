@@ -65,15 +65,35 @@ and restart.
 
 Settings, Devices & services, Add integration, "Batocera", then "Install
 ha-batocera on the box". Give the box a name (its topics go under
-`batocera/<name>`), its host name or address, its root password (Batocera's
-default is `linux`) and the broker settings as the box sees them. Home
-Assistant connects over SSH as root, trusts the box's host key from then on,
-installs a key of its own, and runs the installer. The root password is not
-stored.
+`batocera/<name>`), its host name or address, and its root password
+(Batocera's default is `linux`). Home Assistant connects over SSH as root,
+trusts the box's host key from then on, installs a key of its own, sets up
+MQTT for the box, runs the installer, and checks from the box that the daemon
+reaches the broker. The root password is not stored.
 
-Give the box an MQTT account of its own: Home Assistant's may point at a
-broker only it can reach (`core-mosquitto`, `localhost`), and usually has far
-more rights than a box needs.
+The box gets an MQTT account of its own, never Home Assistant's, which
+usually has far more rights than a box needs:
+
+- **With the Mosquitto broker add-on** behind Home Assistant's MQTT
+  integration, there is nothing to answer. Home Assistant adds the login
+  `batocera-<name>`, with a random password, to the add-on's options and
+  restarts the add-on: devices on MQTT reconnect within seconds. Deleting the
+  box from the integration removes the login.
+- **With any other broker**, create an account for the box on it, and fill
+  in the form's Advanced section: the broker's host and port as the box
+  reaches them (an address on your network, not `core-mosquitto` or
+  `localhost`), and the account. If the broker uses ACLs, the account needs
+  the rights listed under [MQTT topics](docs/internals.md#mqtt-topics).
+
+With Advanced left empty, Home Assistant looks for the broker from the box:
+at the address in Home Assistant's MQTT integration, unless only Home
+Assistant can resolve it (`core-mosquitto`, `localhost`), then at Home
+Assistant's own address as the box sees it, then at `homeassistant.local`.
+Without the add-on, a broker found this way is used only if it lets the box
+in without an account; if it wants one, the form comes back with its address
+filled in under Advanced. A broker that Home Assistant reaches over TLS is not
+looked for: fill in Advanced with a listener the box can use, or install the
+daemon yourself (2b) and add the TLS options to its broker settings.
 
 Home Assistant then keeps the daemon up to date: when the box comes online and
 no game is running, it reinstalls the daemon if the versions differ. A game in
@@ -95,7 +115,8 @@ command again to upgrade.
 
 **Uninstall.** On the box, `/userdata/system/ha-batocera/uninstall.sh`
 removes the service, the hook, the daemon and Home Assistant's SSH key, and
-clears the retained messages. Then delete the box from the integration.
+clears the retained messages. Then delete the box from the integration, which
+also removes its login from the Mosquitto add-on, if Home Assistant added one.
 
 ## Who may play
 

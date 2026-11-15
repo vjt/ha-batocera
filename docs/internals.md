@@ -102,12 +102,45 @@ Home Assistant connects to the box over SSH as root, with the password:
 - it generates an ed25519 key pair of its own and adds the public key to
   `/userdata/system/.ssh/authorized_keys`, root's, with the comment
   `ha-batocera`, replacing the key of any earlier pairing;
-- it copies the daemon to the box and runs the installer with your settings,
-  the MQTT password on the installer's standard input, never on a command
-  line.
+- it copies the daemon to the box and runs the installer with the broker
+  settings below, the MQTT password on the installer's standard input, never
+  on a command line;
+- with its own key, it checks the daemon's version, and that the box connects
+  to the broker with the files the daemon reads: `mosquitto_pub`, run as the
+  daemon runs it, publishes an empty message, not retained, on
+  `batocera/<device>/check`.
+
+The broker settings are the ones typed under Advanced, as given. Without them,
+Home Assistant looks, from the box, over the same SSH connection and before
+anything on the box changes:
+
+- **Where.** In this order, all on the port of Home Assistant's MQTT entry
+  (default 1883): the host of that entry, unless it only means something
+  inside Home Assistant (`core-mosquitto`, `localhost`, a loopback address);
+  Home Assistant's address as the box sees it, the first field of
+  `$SSH_CLIENT` (not the local address of Home Assistant's socket, which
+  behind Docker's NAT is the container's); `homeassistant.local`. The first
+  one the box connects to wins, with an MQTT CONNECT by `mosquitto_pub`, its
+  options in a mode-600 file of a private temporary directory, written from
+  standard input. A broker Home Assistant reaches over TLS is not looked for.
+- **Who.** When Home Assistant runs the Mosquitto add-on (Supervisor) and
+  its MQTT entry uses it, Home Assistant adds the login `batocera-<device>`,
+  with a random password, to the add-on's `logins` option, through the MQTT
+  integration's own add-on manager, leaving the other options as they are.
+  It then restarts the add-on and waits until its own MQTT client is
+  connected to it again. Removing the entry removes the login, and restarts
+  the add-on if it runs. No Home Assistant user is created. With any other
+  broker, nothing is created: the box gets a broker only if it needs no
+  account.
+
+The errors name the broker tried: `mqtt_refused` (connection refused, or host
+not found), `mqtt_timeout`, `mqtt_auth` (user name or password), `mqtt_tls`.
+When the check after installing fails, the daemon stays installed with those
+settings: installing again overwrites them.
 
 The root password is used for that connection only and is not stored. Home
-Assistant keeps the private key and the host key in its config entry.
+Assistant keeps the private key, the host key and the name of its add-on
+login, if any, in its config entry.
 
 Each time the box comes online, as soon as no game is running, Home Assistant
 compares the daemon version on the box with the one it ships. If they differ,
