@@ -366,7 +366,7 @@ const STYLE = `
   /* What the game is scrolls, when a short screen must; the warnings and
      PRESS START below it stay in sight. */
   .sbody { flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
-  .sheet .panel > :not(.sbody), .sbody > * { flex: none; }
+  .sheet .panel > :not(.sbody), .sbody > :not(.sdesc) { flex: none; }
   /* The cover gives way on a short screen: on a phone the rest fits under it. */
   .sheet .art { width: min(60vw, 200px, 24vh); width: min(60vw, 200px, 24dvh); margin: 0 auto;
                 border: 2px solid var(--bt-edge); }
@@ -374,12 +374,12 @@ const STYLE = `
   .ssystem { color: var(--bt-dim); }
   .sinfo { display: flex; flex-direction: column; gap: 4px; }
   .sfacts, .scredits, .splayed { font-size: 13px; line-height: 1.4; color: var(--bt-dim); }
-  /* A few lines, the rest a scroll away inside its own box. */
+  /* As tall as the screen leaves, the rest a scroll away: it gives way
+     first, down to a few lines, before the cover and the facts do. */
   .sdesc {
-    max-height: 5.8em; overflow-y: auto; overscroll-behavior: contain; padding: 8px 10px;
-    font-size: 13px; line-height: 1.45; text-align: left; white-space: pre-line; overflow-wrap: anywhere;
-    color: var(--bt-fg); background: var(--bt-bg); border: 2px solid var(--bt-edge);
-    scrollbar-width: thin; scrollbar-color: var(--bt-edge) transparent;
+    flex: 0 1 auto; min-height: 4.4em; overflow-y: auto; overscroll-behavior: contain;
+    font-size: 14px; line-height: 1.5; text-align: left; white-space: pre-line; overflow-wrap: anywhere;
+    color: var(--bt-fg); scrollbar-width: thin; scrollbar-color: var(--bt-edge) transparent;
   }
   .sdesc:focus-visible { outline: 2px solid var(--bt-yellow); outline-offset: 2px; }
   .sinfo > :empty, .sdesc:empty { display: none; }
