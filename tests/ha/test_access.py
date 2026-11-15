@@ -92,8 +92,7 @@ async def test_options_flow_lists_non_admin_users(
     await hass.auth.async_deactivate_user(gone)
     result = await hass.config_entries.options.async_init(setup.entry_id)
     assert result["type"] is FlowResultType.FORM
-    [key] = result["data_schema"].schema
-    options = result["data_schema"].schema[key].config["options"]
+    options = result["data_schema"].schema["control_users"].config["options"]
     assert options == [{"value": kid.id, "label": "Kid"}]
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"control_users": [kid.id]}

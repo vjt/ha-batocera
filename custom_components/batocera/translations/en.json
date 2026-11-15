@@ -130,11 +130,29 @@
     "step": {
       "init": {
         "title": "Who may play",
-        "description": "Everyone who can open Home Assistant sees what is playing and browses the games. Launching, pausing and stopping games is for admins, and for the users picked here. Automations may always do it.",
+        "description": "Everyone who can open Home Assistant sees what is playing and browses the games. Launching, pausing and stopping games, and shutting the box down and powering it on, is for admins, and for the users picked here. Automations may always do it.",
         "data": {
-          "control_users": "Users who may launch, pause and stop games"
+          "control_users": "Users who may launch, pause and stop games, and power the box on and off"
+        },
+        "sections": {
+          "advanced": {
+            "name": "Advanced",
+            "description": "Where Power on sends its Wake-on-LAN packet. Empty, the box's own: it reports them while it is on, and Home Assistant keeps the last ones for when it is off.",
+            "data": {
+              "wake_mac": "MAC address",
+              "wake_broadcast": "Broadcast address"
+            },
+            "data_description": {
+              "wake_mac": "Of the box's network card, as aa:bb:cc:dd:ee:ff.",
+              "wake_broadcast": "Of the box's subnet, as 192.168.1.255. Empty, and not reported by the box, the packet goes to 255.255.255.255, which may leave from another network than the box's."
+            }
+          }
         }
       }
+    },
+    "error": {
+      "invalid_mac": "Enter a MAC address as aa:bb:cc:dd:ee:ff, or leave it empty.",
+      "invalid_broadcast": "Enter an IPv4 address, or leave it empty."
     }
   },
   "exceptions": {
@@ -168,8 +186,32 @@
     "launch_unknown_game": {
       "message": "{name} could not launch {game}: it is not in the box's catalog any more."
     },
+    "launch_shutting_down": {
+      "message": "{name} could not launch {game}: the box is shutting down."
+    },
     "launch_failed": {
       "message": "{name} could not launch {game}: {reason}."
+    },
+    "shutdown_bad_request": {
+      "message": "{name} cannot shut down from Home Assistant: the ha-batocera daemon on the box is older than that. Update it."
+    },
+    "shutdown_busy": {
+      "message": "{name} did not shut down: the running game did not quit."
+    },
+    "shutdown_es_unreachable": {
+      "message": "{name} did not shut down: EmulationStation does not answer."
+    },
+    "shutdown_shutting_down": {
+      "message": "{name} is already shutting down."
+    },
+    "shutdown_timeout": {
+      "message": "{name} did not answer about shutting down."
+    },
+    "shutdown_failed": {
+      "message": "{name} did not shut down: {reason}."
+    },
+    "wake_failed": {
+      "message": "Home Assistant could not send the Wake-on-LAN packet to {name}: {reason}."
     },
     "pause_not_playing": {
       "message": "{name} is not playing a game."

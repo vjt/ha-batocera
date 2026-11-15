@@ -39,6 +39,8 @@ async def test_one_card_per_box(hass, mqtt_mock, setup):
             "limit": "number.arcade_daily_limit",
             "manual": "switch.arcade_manual_lock",
             "screen": "image.arcade_screen",
+            "shutdown": "button.arcade_shut_down",
+            "power_on": "button.arcade_power_on",
         },
     }
 
