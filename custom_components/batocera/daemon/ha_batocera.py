@@ -48,6 +48,8 @@ COVER_MAX = 500 * 1024  # never publish a bigger cover
 THUMB_SIZE = 256        # catalog covers, pixels
 REQ_MAX = 4096          # bigger requests are dropped
 REQ_ID = re.compile(r"^[0-9a-f]{8,32}$")
+# Bytes of UTF-8 an info answer keeps of each text; longer ones are cut.
+INFO_TEXT = {"desc": 2048, "developer": 256, "publisher": 256}
 # EmulationStation's web API, by address: "localhost" may resolve to ::1,
 # which it refuses. Only ever used on the box itself.
 ES_URL = "http://127.0.0.1:1234"
@@ -288,6 +290,28 @@ def es_int(value):
         return 0
 
 
+def cut(text, limit):
+    """text in at most limit bytes of UTF-8, ending in "…" when cut."""
+    data = text.encode()
+    if len(data) <= limit:
+        return text
+    return data[:limit - 3].decode(errors="ignore").rstrip() + "…"
+
+
+def game_details(game):
+    """What an info request answers of a game, from EmulationStation: its
+    description, developer and publisher (cut to INFO_TEXT), and the seconds
+    it was played in all; each left out when empty."""
+    details = {}
+    for key, limit in INFO_TEXT.items():
+        text = str(game.get(key) or "").strip()
+        if text:
+            details[key] = cut(text, limit)
+    if (seconds := es_int(game.get("gametime"))) > 0:
+        details["gametime"] = seconds
+    return details
+
+
 def rom_folder(path, roms=ROMS):
     """The folder of a ROM under its system's ROM folder: "Fighter" for
     /userdata/roms/mame/Fighter/kinst.zip, "" for a ROM at the top or
@@ -409,8 +433,11 @@ class EsApi:
         except (OSError, ValueError) as err:  # URLError and timeouts are OSErrors
             raise EsError(f"{path}: {err}") from err
 
-    def json(self, path):
+    def json(self, path, missing=False):
+        """The JSON answer; with missing, None when it is a 404."""
         status, body = self.request(path)
+        if missing and status == 404:
+            return None
         if status != 200:
             raise EsError(f"{path}: HTTP {status}")
         try:
@@ -423,6 +450,15 @@ class EsApi:
 
     def games(self, system):
         return self.json(f"/systems/{quote(system, safe='')}/games")
+
+    def game(self, system, es_id):
+        """One game, as games() lists it, or None when EmulationStation does
+        not know it. Its media, the same way, came with the same release."""
+        path = f"/systems/{quote(system, safe='')}/games/{quote(es_id, safe='')}"
+        game = self.json(path, missing=True)
+        if game is not None and not isinstance(game, dict):
+            raise EsError(f"{path}: not a game")
+        return game
 
     def media(self, system, es_id, key):
         """A game's media file (key: thumbnail, image...), or None."""
@@ -727,6 +763,7 @@ class Daemon:
             return
         handler = {
             "cover": self.req_cover,
+            "info": self.req_info,
             "launch": self.req_launch,
             "pause": self.req_pause,
             "refresh": self.req_refresh,
@@ -771,6 +808,21 @@ class Daemon:
         if jpeg is None:
             return self.respond(rid, "failed")
         self.respond(rid, jpeg=base64.b64encode(jpeg).decode())
+
+    def req_info(self, rid, req):
+        """What the catalog leaves out of a game (game_details), read from
+        EmulationStation one game at a time, as asked."""
+        rom = self.find_rom(req)
+        if rom is None:
+            return self.respond(rid, "unknown_game")
+        try:
+            game = self.es.game(rom.system, rom.es_id)
+        except EsError as err:
+            log.warning("info of %s: %s", rom.path, err)
+            return self.respond(rid, "es_unreachable")
+        if game is None:  # gone since the catalog was read
+            return self.respond(rid, "unknown_game")
+        self.respond(rid, **game_details(game))
 
     def req_launch(self, rid, req):
         """Quit the running game, wait for EmulationStation to be idle, then

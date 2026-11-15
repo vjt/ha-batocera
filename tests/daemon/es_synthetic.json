@@ -29,6 +29,8 @@
        "systemName": "megadrive", "releasedate": "19910623T000000", "genre": "Platform",
        "players": "1", "favorite": "true", "playcount": "12", "lastplayed": "20261102T183000",
        "kidgame": "true", "rating": "0.75",
+       "desc": "Sonic runs fast.\nDr. Robotnik waits.", "developer": "Sonic Team",
+       "publisher": "Sega", "gametime": "4321",
        "thumbnail": "/systems/megadrive/games/a0/media/thumbnail",
        "image": "/systems/megadrive/games/a0/media/image"},
       {"id": "a1", "path": "/userdata/roms/megadrive/Streets of Rage.zip", "name": "Streets of Rage",

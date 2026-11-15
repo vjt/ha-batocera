@@ -99,6 +99,11 @@ class FakeEs:
         match = re.fullmatch(r"/systems/(.+)/games", path)
         if match and match[1] in self.games:
             return 200, json.dumps(self.games[match[1]]).encode()
+        match = re.fullmatch(r"/systems/([^/]+)/games/([^/]+)", path)
+        if match:
+            for game in self.games.get(match[1], []):
+                if game["id"] == match[2]:
+                    return 200, json.dumps(game).encode()
         if path in self.media:
             return 200, self.media[path]
         return 404, b""
@@ -530,6 +535,23 @@ class CatalogTest(TempDirTest):
         games = {"megadrive": SYNTHETIC["games"]["megadrive"]}  # snes not fetched
         self.assertEqual(list(self.build(games=games)), ["megadrive"])
 
+    def test_game_details(self):
+        sonic = SYNTHETIC["games"]["megadrive"][0]
+        self.assertEqual(hb.game_details(sonic), {
+            "desc": "Sonic runs fast.\nDr. Robotnik waits.", "developer": "Sonic Team",
+            "publisher": "Sega", "gametime": 4321})
+        # Unscraped, never played, or garbage: nothing to say.
+        self.assertEqual(hb.game_details({"desc": "  ", "developer": "", "gametime": "0"}), {})
+        self.assertEqual(hb.game_details({"gametime": "x"}), {})
+
+    def test_long_texts_are_cut(self):
+        self.assertEqual(hb.cut("short", 10), "short")
+        details = hb.game_details({"desc": "é" * 2000, "developer": "d" * 300})
+        self.assertLessEqual(len(details["desc"].encode()), 2048)  # never half a character
+        self.assertEqual(details["desc"], "é" * 1022 + "…")
+        self.assertEqual(details["developer"], "d" * 253 + "…")
+        self.assertEqual(hb.cut("abcdef", 5), "ab…")
+
     def test_es_settings(self):
         path = self.tmp / "es_settings.cfg"
         path.write_text('<?xml version="1.0"?>\n<config>\n'
@@ -569,6 +591,12 @@ class EsApiTest(unittest.TestCase):
         self.assertEqual(self.es.media("snes", "b0", "thumbnail"), b"PNG")
         self.assertIsNone(self.es.media("snes", "b0", "image"))
         self.assertEqual(self.fake.requests[-1], ("GET", "/systems/snes/games/b0/media/image"))
+
+    def test_game(self):
+        self.assertEqual(self.es.game("megadrive", "a0")["developer"], "Sonic Team")
+        self.assertEqual(self.fake.requests[-1], ("GET", "/systems/megadrive/games/a0"))
+        self.assertIsNone(self.es.game("megadrive", "zz"))  # 404: not known
+        self.assertIsNone(self.es.game("nope", "a0"))
 
     def test_path_parts_are_quoted(self):
         self.assertIsNone(self.es.media("a b", "x/../y", "image"))
@@ -963,6 +991,26 @@ class RequestTest(unittest.TestCase):
         size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
                                "-of", "csv=p=0", "-"], input=jpeg, capture_output=True, check=True)
         self.assertEqual(size.stdout.decode().strip(), "256,192")
+
+    def test_info(self):
+        self.assertEqual(self.answer(op="info", system="megadrive", game=self.SONIC), {
+            "id": "0123abcd", "ok": True, "desc": "Sonic runs fast.\nDr. Robotnik waits.",
+            "developer": "Sonic Team", "publisher": "Sega", "gametime": 4321})
+        # One game asked of EmulationStation, by its own id, not the system's list.
+        self.assertEqual(self.fake.requests[-1], ("GET", "/systems/megadrive/games/a0"))
+        # Unscraped and never played: nothing more to say, and that is no error.
+        self.assertEqual(self.answer(op="info", game=self.BARE), {"id": "0123abcd", "ok": True})
+
+    def test_info_errors(self):
+        self.assertEqual(self.answer(op="info", game="0" * 12)["error"], "unknown_game")
+        self.assertEqual(self.answer(op="info", game=["a0"])["error"], "unknown_game")
+        self.assertEqual(self.answer(op="info", system="snes", game=self.SONIC)["error"],
+                         "unknown_game")
+        self.fake.games = {"megadrive": []}  # gone since the catalog was read
+        self.assertEqual(self.answer(op="info", game=self.SONIC)["error"], "unknown_game")
+        self.fake.close()
+        with self.assertLogs(hb.log, "WARNING"):
+            self.assertEqual(self.answer(op="info", game=self.SONIC)["error"], "es_unreachable")
 
     def start_line(self, rom="/userdata/roms/megadrive/Sonic.zip"):
         return "\t".join(["gameStart", str(os.getpid()), "megadrive", "libretro",
