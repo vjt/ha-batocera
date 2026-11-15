@@ -284,7 +284,10 @@ const STYLE = `
     font-size: 16px; color-scheme: dark;
   }
   .pick:hover:not(:has(select:disabled)) { background: rgba(62, 244, 255, 0.1); }
-  .pick.on, .pick.on:hover { background: var(--bt-cyan); color: var(--bt-bg); }
+  /* The hover rule's :not(), not just :hover: on a phone the tapped filter
+     stays hovered, and the plain hover background (more specific than
+     .pick.on:hover) left the lit filter dark, its dark text on it. */
+  .pick.on, .pick.on:hover:not(:has(select:disabled)) { background: var(--bt-cyan); color: var(--bt-bg); }
   .pick:has(select:disabled) { opacity: 0.45; box-shadow: none; }
   .pick select:disabled { cursor: default; }
   .status { text-align: center; padding: 32px 8px; }
