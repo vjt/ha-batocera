@@ -285,14 +285,18 @@ The page's launch dialog says what the game is. `batocera/games` with
 when there are (most games were never played). The rest is not in the
 catalog, a description per game being too much for it: the dialog asks
 `batocera/info` (`entry_id`, `game`), and Home Assistant asks the box (the
-`info` request below) and answers `desc`, `developer`, `publisher` and
-`gametime` (seconds played in all, as EmulationStation counts them), each
-left out when there is none. Home Assistant keeps the answer for a week,
-like a cover, in memory and next to the covers on disk, but only while the
-game's last played in the catalog stays the same: a game played since is
-asked again, for its new total. When the box cannot say (offline, busy, or a
-daemon before 0.8, which answers `bad_request`), `batocera/info` answers
-`{}`, nothing is kept, and the dialog shows the catalog's facts alone.
+`info` request below) and answers `desc`, `developer`, `publisher`,
+`gametime` (seconds played in all, as EmulationStation counts them) and
+`size` (the bytes the game takes on the box), each left out when there is
+none. Home Assistant keeps the answer for a week, like a cover, in memory
+and next to the covers on disk, but only while the game's last played in
+the catalog stays the same: a game played since is asked again, for its new
+total. An answer kept before the box measured sizes (no `format` 2 in the
+kept JSON) is asked again once, and serves until the box answers. When the
+box cannot say (offline, busy, or a daemon before 0.8, which answers
+`bad_request`), `batocera/info` answers `{}`, nothing is kept, and the
+dialog shows the catalog's facts alone. The dialog shows the size with the
+year, genre, players and rating, in SI units: `850 MB`, `2.3 GB`, `25 GB`.
 
 The page's search finds games by name and, apart, by description. The
 media player's search (`media_player/search_media`) answers `result`, the
@@ -317,7 +321,7 @@ bigger than 4 KB, or without a valid id, are dropped.
 | `op` | Other fields | Answer when it works |
 |------|--------------|----------------------|
 | `cover` | `system`, `game` (an id from the catalog) | `jpeg`: the cover, base64, at most 256 px a side |
-| `info` | `system`, `game` | `desc`, `developer`, `publisher` (text; the description cut at 2 KB, the others at 256 bytes) and `gametime` (seconds played in all), each left out when empty; from EmulationStation's `/systems/<system>/games/<id>`, one game at a time |
+| `info` | `system`, `game` | `desc`, `developer`, `publisher` (text; the description cut at 2 KB, the others at 256 bytes) and `gametime` (seconds played in all), from EmulationStation's `/systems/<system>/games/<id>`, one game at a time; and `size`, the bytes the game takes, measured then: a file's size; an `.m3u` with every disc it lists (and the tracks of a `.cue` among them), a `.cue` with every `FILE` it names, each relative to the list's folder; a folder, every file under it, symlinks not followed. Each file counted once; one missing or unreadable is left out. A folder of more than 50000 files and folders is not measured, and at most 64 KB of a list is read. Each field left out when empty |
 | `launch` | `system`, `game` | nothing more, once EmulationStation was asked to launch it |
 | `pause` | `paused`: `true` or `false` | `paused`: what the daemon believes now |
 | `refresh` | none | nothing more; the catalog is read again |
