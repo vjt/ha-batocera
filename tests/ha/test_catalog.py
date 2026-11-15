@@ -18,6 +18,7 @@ from custom_components.batocera.box import (
     contained_logo,
     logo_type,
 )
+from custom_components.batocera.info import checked
 
 from conftest import BARE, INDEX, MARIO, ROWS, SONIC, SOR, TOPIC, publish_catalog
 
@@ -723,7 +724,48 @@ async def test_info_from_an_old_or_busy_box(hass, mqtt_mock, setup, daemon, hass
     assert (await info(client, SONIC, setup.entry_id))["result"] == {}
     assert (await info(client, SONIC, setup.entry_id))["result"] == {}
     assert len(daemon.requests) == 3
-    assert json.loads(path.read_text()) == {"lastplayed": "20261102T183000", "info": {}}
+    assert json.loads(path.read_text()) == {"format": 2, "lastplayed": "20261102T183000", "info": {}}
+
+
+def test_info_checked():
+    # The size the game takes, like the time played: a positive int, or left out.
+    assert checked({"gametime": 60, "size": 2_300_000_000}) == {"gametime": 60, "size": 2_300_000_000}
+    for size in (0, -5, True, 1.5, "123", None, [1]):
+        assert checked({"developer": "Sega", "size": size}) == {"developer": "Sega"}
+    assert checked(["size", 1]) == {}
+
+
+async def test_info_kept_before_the_size_is_asked_again_once(
+    hass, mqtt_mock, setup, daemon, hass_ws_client
+):
+    await publish_catalog(hass)
+    client = await hass_ws_client(hass)
+    folder = Path(hass.config.cache_path("batocera", setup.entry_id))
+    folder.mkdir(parents=True, exist_ok=True)
+    old = {"desc": "Sonic runs fast.", "gametime": 4321}
+    for gid, lastplayed in ((SONIC, "20261102T183000"), (SOR, "20261104T200000")):
+        (folder / f"{gid}.json").write_text(json.dumps({"lastplayed": lastplayed, "info": old}))
+        os.utime(folder / f"{gid}.json", (time.time(), time.time()))
+    # The box is off: what was kept before the size serves meanwhile.
+    assert (await info(client, SONIC, setup.entry_id))["result"] == old
+    assert daemon.requests == []
+    fire(hass, "availability", "online")
+    await hass.async_block_till_done()
+    # Online: asked again, once, and kept with the size.
+    daemon.answers["info"] = {"ok": True, **INFO, "size": 2_300_000_000}
+    assert (await info(client, SONIC, setup.entry_id))["result"] == {**INFO, "size": 2_300_000_000}
+    box = setup.runtime_data
+    box.game_info._memory.clear()
+    assert (await info(client, SONIC, setup.entry_id))["result"]["size"] == 2_300_000_000
+    assert len(daemon.requests) == 1
+    assert json.loads((folder / f"{SONIC}.json").read_text())["format"] == 2
+    # A daemon that never says the size: asked again once too, then kept as
+    # it answers, not asked each time.
+    daemon.answers["info"] = {"ok": True, **INFO}
+    assert (await info(client, SOR, setup.entry_id))["result"] == INFO
+    box.game_info._memory.clear()
+    assert (await info(client, SOR, setup.entry_id))["result"] == INFO
+    assert len(daemon.requests) == 2
 
 
 async def test_info_fetched_once_while_asked_many_times(hass, mqtt_mock, setup, daemon):

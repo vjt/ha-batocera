@@ -1,10 +1,13 @@
 """What the box tells of a game beyond the catalog, as it sends it on
-request: its description, developer and publisher, and the seconds it was
-played in all. The page's launch dialog asks for it.
+request: its description, developer and publisher, the seconds it was
+played in all, and the bytes it takes on the box. The page's launch dialog
+asks for it.
 
 Kept as long as a cover (covers.TTL): in memory for the most recent games,
 and on disk next to the covers. An answer serves only while the game's last
 played, in the catalog, stays the same: a game played since has a new total.
+One kept in an older format (FORMAT) is asked again; until the box answers,
+it still serves.
 """
 
 from __future__ import annotations
@@ -27,6 +30,11 @@ _LOGGER = logging.getLogger(__name__)
 TIMEOUT = 10  # seconds the box gets to answer
 # Characters kept of each text; the box cuts them shorter already.
 TEXTS = {"desc": 4096, "developer": 256, "publisher": 256}
+# Counts, each a positive int: the seconds played, the bytes the game takes.
+COUNTS = ("gametime", "size")
+# How an answer is kept on disk. 2: since the box measures the game's size;
+# one kept before has none and is asked again, once, whatever the box says.
+FORMAT = 2
 
 
 def checked(answer: Any) -> dict[str, Any]:
@@ -38,9 +46,10 @@ def checked(answer: Any) -> dict[str, Any]:
     for key, limit in TEXTS.items():
         if isinstance(text := answer.get(key), str) and text.strip():
             info[key] = text.strip()[:limit]
-    seconds = answer.get("gametime")
-    if isinstance(seconds, int) and not isinstance(seconds, bool) and seconds > 0:
-        info["gametime"] = seconds
+    for key in COUNTS:
+        count = answer.get(key)
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            info[key] = count
     return info
 
 
@@ -67,11 +76,13 @@ class InfoCache:
         return await asyncio.shield(task)
 
     async def _load(self, game: Game) -> dict[str, Any] | None:
-        info = await self.hass.async_add_executor_job(self._read, game)
-        if info is None:
+        kept = await self.hass.async_add_executor_job(self._read, game)
+        if kept is not None and kept[0] == FORMAT:
+            info = kept[1]
+        else:
             info = await self._fetch(game)
-            if info is None:
-                return None
+            if info is None:  # meanwhile, what was kept in an older format
+                return kept[1] if kept is not None else None
             await self.hass.async_add_executor_job(self._write, game, info)
         self._memory[game.id] = (game.lastplayed, info)
         self._memory.move_to_end(game.id)
@@ -96,7 +107,9 @@ class InfoCache:
     def _path(self, gid: str) -> Path:
         return self.directory / f"{gid}.json"
 
-    def _read(self, game: Game) -> dict[str, Any] | None:
+    def _read(self, game: Game) -> tuple[Any, dict[str, Any]] | None:
+        """The format and the info kept for the game, if fresh and still the
+        game's (the same last played)."""
         path = self._path(game.id)
         try:
             if time.time() - path.stat().st_mtime > TTL:
@@ -106,7 +119,9 @@ class InfoCache:
             return None
         if not isinstance(kept, dict) or not isinstance(kept.get("info"), dict):
             return None
-        return checked(kept["info"]) if kept.get("lastplayed") == game.lastplayed else None
+        if kept.get("lastplayed") != game.lastplayed:
+            return None
+        return kept.get("format"), checked(kept["info"])
 
     def _write(self, game: Game, info: dict[str, Any]) -> None:
         path = self._path(game.id)
@@ -114,7 +129,8 @@ class InfoCache:
         tmp = path.with_name(f"{game.id}.json.tmp")
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(json.dumps({"lastplayed": game.lastplayed, "info": info}), "utf-8")
+            kept = {"format": FORMAT, "lastplayed": game.lastplayed, "info": info}
+            tmp.write_text(json.dumps(kept), "utf-8")
             tmp.replace(path)
         except OSError as err:
             _LOGGER.warning(
