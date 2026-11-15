@@ -70,6 +70,10 @@ much it was played, its description), PRESS START, and it starts on the TV.
   a manual lock, and a warning five minutes before the end. Batocera has no
   user profiles, so limits apply to the whole box.
 
+<p align="center">
+  <img src="docs/page-offline.jpg" width="300" alt="The Batocera page on a phone: the box is off, OFFLINE, no signal from the box, a POWER ON button; the games are still there to browse">
+</p>
+
 It is two parts, both in this repository: a Home Assistant integration
 (`custom_components/batocera/`) and a small daemon for the box (Python 3,
 standard library only), which ships inside the integration. They talk over
