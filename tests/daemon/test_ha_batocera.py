@@ -625,6 +625,112 @@ class CatalogTest(TempDirTest):
         self.assertEqual(hb.es_settings(self.tmp / "nope"), {})
 
 
+class GameSizeTest(TempDirTest):
+    """The space a game takes, as an info answer says it."""
+
+    def file(self, name, size):
+        path = self.tmp / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * size)
+        return path
+
+    def size(self, name, **kwargs):
+        return hb.game_size(str(self.tmp / name), **kwargs)
+
+    def test_a_file(self):
+        self.file("megadrive/Sonic.zip", 1234)
+        self.assertEqual(self.size("megadrive/Sonic.zip"), 1234)
+
+    def test_m3u_counts_each_disc_once(self):
+        self.file("saturn/Shooter/Corpse Killer Disc 1 of 2.chd", 1000)
+        self.file("saturn/Shooter/discs/Corpse Killer Disc 2 of 2.chd", 2000)
+        elsewhere = self.file("elsewhere/Bonus.chd", 400)
+        playlist = (b"#EXTM3U\r\n\r\nCorpse Killer Disc 1 of 2.chd\r\n"
+                    b"discs/Corpse Killer Disc 2 of 2.chd\r\n"
+                    b"./Corpse Killer Disc 1 of 2.chd\r\n"  # the same disc again
+                    b"Corpse Killer Disc 3 of 2.chd\r\n"  # missing
+                    + str(elsewhere).encode() + b"\r\n")  # absolute
+        (self.tmp / "saturn/Shooter/Corpse Killer.m3u").write_bytes(playlist)
+        self.assertEqual(self.size("saturn/Shooter/Corpse Killer.m3u"), len(playlist) + 3400)
+
+    def test_m3u_of_cue_sheets_counts_their_tracks(self):
+        self.file("psx/FF7/FF7 (Disc 1).bin", 5000)
+        self.file("psx/FF7/FF7 (Disc 2).bin", 6000)
+        cues = [f'FILE "FF7 (Disc {n}).bin" BINARY\n  TRACK 01 MODE2/2352\n'.encode() for n in (1, 2)]
+        for n, cue in enumerate(cues, 1):
+            (self.tmp / f"psx/FF7/FF7 (Disc {n}).cue").write_bytes(cue)
+        playlist = b"FF7/FF7 (Disc 1).cue\nFF7/FF7 (Disc 2).cue\n"
+        (self.tmp / "psx/FF7.m3u").write_bytes(playlist)
+        self.assertEqual(self.size("psx/FF7.m3u"), len(playlist) + sum(map(len, cues)) + 11000)
+
+    def test_cue_counts_its_tracks(self):
+        folder = "saturn/Nights Into Dreams... (PAL)[!]"
+        self.file(f"{folder}/Nights (Track 01 of 3)[!].iso", 4000)
+        self.file(f"{folder}/Nights (Track 02 of 3)[!].wav", 500)
+        self.file(f"{folder}/track3.wav", 300)
+        cue = (b"CATALOG 4974365810207\r\n"
+               b'FILE "Nights (Track 01 of 3)[!].iso" BINARY\r\n  TRACK 01 MODE1/2048\r\n'
+               b'FILE "Nights (Track 02 of 3)[!].wav" WAVE\r\n  TRACK 02 AUDIO\r\n'
+               b"file track3.wav WAVE\r\n  TRACK 03 AUDIO\r\n"  # unquoted, any case
+               b'FILE "Nights (Track 01 of 3)[!].iso" BINARY\r\n'  # again
+               b'FILE "gone.wav" WAVE\r\n')  # missing
+        (self.tmp / folder / "Nights.cue").write_bytes(cue)
+        self.assertEqual(self.size(f"{folder}/Nights.cue"), len(cue) + 4800)
+
+    def test_names_in_any_encoding(self):
+        # A list in Latin-1 names its file in Latin-1 bytes: found all the same.
+        disc = os.fsencode(self.tmp) + b"/Pok\xe9mon.chd"
+        with open(disc, "wb") as f:
+            f.write(b"x" * 700)
+        playlist = b"\xef\xbb\xbfPok\xe9mon.chd\n"  # behind a BOM, too
+        (self.tmp / "Pokemon.m3u").write_bytes(playlist)
+        self.assertEqual(self.size("Pokemon.m3u"), len(playlist) + 700)
+
+    def test_folder_counts_every_file_under_it(self):
+        self.file("ps3/Game.ps3/PS3_GAME/USRDIR/EBOOT.BIN", 7000)
+        self.file("ps3/Game.ps3/PS3_DISC.SFB", 100)
+        self.file("outside/big.bin", 1_000_000)
+        game = self.tmp / "ps3/Game.ps3"
+        (game / "link.bin").symlink_to(self.tmp / "outside/big.bin")  # not followed
+        (game / "linkdir").symlink_to(self.tmp / "outside", target_is_directory=True)
+        os.link(game / "PS3_DISC.SFB", game / "PS3_DISC.again")  # the same file
+        (game / "empty").mkdir()
+        self.assertEqual(self.size("ps3/Game.ps3"), 7100)
+        # 8 files and folders: as many as allowed, measured; more, not at all.
+        self.assertEqual(self.size("ps3/Game.ps3", entries=8), 7100)
+        with self.assertLogs(hb.log, "INFO"):
+            self.assertIsNone(self.size("ps3/Game.ps3", entries=7))
+
+    def test_nothing_readable_no_size(self):
+        self.assertIsNone(self.size("gone.zip"))
+        self.assertIsNone(hb.game_size(str(self.tmp / "bad\0name.zip")))
+        self.file("empty.zip", 0)
+        self.assertIsNone(self.size("empty.zip"))
+        (self.tmp / "nothing").mkdir()
+        self.assertIsNone(self.size("nothing"))
+        os.mkfifo(self.tmp / "fifo.m3u")  # not a file: never opened, it would wait
+        self.assertIsNone(self.size("fifo.m3u"))
+        # Garbage in a playlist: left out, nothing raises.
+        playlist = b"disc\x00.chd\n\xff\xfe.chd\n" + b"a" * 5000 + b"\n../fifo.m3u\n"
+        (self.tmp / "odd/odd.m3u").parent.mkdir()
+        (self.tmp / "odd/odd.m3u").write_bytes(playlist)
+        self.assertEqual(self.size("odd/odd.m3u"), len(playlist))
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads anything")
+    def test_unreadable_parts_are_left_out(self):
+        self.file("game/a.bin", 100)
+        self.file("game/locked/b.bin", 200)
+        locked = self.tmp / "game/locked"
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o755)
+        self.assertEqual(self.size("game"), 100)
+        self.file("disc.chd", 300)
+        playlist = self.tmp / "Locked.m3u"
+        playlist.write_bytes(b"disc.chd\n")
+        playlist.chmod(0)  # its size is known, what it lists is not
+        self.assertEqual(self.size("Locked.m3u"), 9)
+
+
 class EsApiTest(unittest.TestCase):
     def setUp(self):
         self.fake = FakeEs()
@@ -1063,7 +1169,24 @@ class RequestTest(unittest.TestCase):
         # One game asked of EmulationStation, by its own id, not the system's list.
         self.assertEqual(self.fake.requests[-1], ("GET", "/systems/megadrive/games/a0"))
         # Unscraped and never played: nothing more to say, and that is no error.
+        # (Neither ROM is on this machine: no size either.)
         self.assertEqual(self.answer(op="info", game=self.BARE), {"id": "0123abcd", "ok": True})
+
+    def test_info_says_the_size(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        rom = Path(tmp.name) / "Sonic.zip"
+        rom.write_bytes(b"x" * 2048)
+        self.d.roms[self.SONIC] = self.d.roms[self.SONIC]._replace(path=str(rom))
+        self.assertEqual(self.answer(op="info", game=self.SONIC), {
+            "id": "0123abcd", "ok": True, "desc": "Sonic runs fast.\nDr. Robotnik waits.",
+            "developer": "Sonic Team", "publisher": "Sega", "gametime": 4321, "size": 2048})
+        # Gone, or a path nothing can stat: no size, the rest still said.
+        for path in (rom.with_name("gone.zip"), "bad\0name.zip"):
+            self.d.roms[self.SONIC] = self.d.roms[self.SONIC]._replace(path=str(path))
+            answer = self.answer(op="info", game=self.SONIC)
+            self.assertNotIn("size", answer)
+            self.assertEqual((answer["ok"], answer["gametime"]), (True, 4321))
 
     def test_info_errors(self):
         self.assertEqual(self.answer(op="info", game="0" * 12)["error"], "unknown_game")
