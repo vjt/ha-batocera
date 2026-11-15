@@ -1,17 +1,24 @@
 """Fixtures for the Home Assistant integration tests."""
 
 from contextlib import asynccontextmanager
+import copy
 import gzip
 import io
 import json
+import re
+import shlex
 import tarfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import asyncssh
 import pytest
+from homeassistant import config_entries
 from homeassistant.components import mqtt
+from homeassistant.components.hassio import AddonError, AddonInfo, AddonState
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import FlowResultType, section
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_mqtt_message
 
 from custom_components.batocera import installer
@@ -20,6 +27,9 @@ from custom_components.batocera.const import CONF_TOPIC, DOMAIN
 TOPIC = "batocera/test"
 NOW = "2026-03-02T10:00:00-08:00"  # tests run in US/Pacific
 ROOT_PASSWORD = "root-secret"
+HA_ADDRESS = "192.0.2.1"  # Home Assistant, as the box sees it
+REFUSED = "Error: Connection refused"
+NOT_AUTHORISED = "Connection error: Connection Refused: not authorised."
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +70,8 @@ def public(key: asyncssh.SSHKey) -> str:
 
 class FakeBox:
     """A Batocera box as asyncssh would see it: dropbear with a root password
-    and authorized_keys, running the commands the installer sends."""
+    and authorized_keys, running the commands the installer sends, and the
+    brokers it can reach through mosquitto_pub."""
 
     def __init__(self) -> None:
         self.host_key = asyncssh.generate_private_key("ssh-ed25519")
@@ -73,6 +84,38 @@ class FakeBox:
         self.runs: list[tuple[str, object]] = []  # (command, stdin)
         self.reachable = True
         self.failing: str | None = None  # commands containing this fail
+        self.ssh_client = f"{HA_ADDRESS} 50522 22"
+        # (host, port) -> accounts {user: password}, or None for anonymous.
+        self.brokers: dict[tuple[str, int], dict[str, str] | None] = {}
+        self.silent: set[tuple[str, int]] = set()  # brokers that never answer
+        self.timed_out = 124  # how timeout(1) ends mosquitto_pub: GNU's
+        self.mqtt_tries: list[tuple[str, int, str]] = []  # (host, port, user)
+        self.mqtt_config: str | None = None  # the daemon's mosquitto_pub file
+
+    def mqtt(self, config: str) -> tuple[int, str]:
+        """mosquitto_pub with these options: exit status and stderr."""
+        options = dict(line.split(" ", 1) for line in config.splitlines())
+        host, port = options["-h"], int(options["-p"])
+        user, password = options.get("-u", ""), options.get("-P", "")
+        self.mqtt_tries.append((host, port, user))
+        if (host, port) in self.silent:
+            return self.timed_out, ""
+        if (host, port) not in self.brokers:
+            return 1, REFUSED
+        accounts = self.brokers[host, port]
+        if accounts is not None and (not user or accounts.get(user) != password):
+            return 5, NOT_AUTHORISED
+        return 0, ""
+
+    def install(self, command: str, stdin: str) -> None:
+        """install.sh: writes the daemon's mosquitto_pub file when given a host."""
+        env = dict(t.split("=", 1) for t in shlex.split(command) if re.match(r"[A-Z_]+=", t))
+        if env.get("MQTT_HOST"):
+            config = f"-h {env['MQTT_HOST']}\n-p {env.get('MQTT_PORT') or 1883}\n"
+            if env.get("MQTT_USER"):
+                config += f"-u {env['MQTT_USER']}\n-P {stdin.removesuffix(chr(10))}\n"
+            self.mqtt_config = config
+        self.version = self.staged["VERSION"].decode().strip()
 
     def trusts(self, keys) -> bool:
         authorized = {asyncssh.import_public_key(k).public_data for k in self.authorized}
@@ -95,7 +138,7 @@ class FakeBox:
 
     async def run(self, command, *, input=None, stdin=None, check=False, **kwargs):
         self.runs.append((command, input if input is not None else stdin))
-        status, out = 0, ""
+        status, out, err = 0, "", ""
         if self.failing and self.failing in command:
             status = 1
         elif command.startswith("cat "):
@@ -107,10 +150,16 @@ class FakeBox:
             with tarfile.open(fileobj=io.BytesIO(input)) as tar:
                 self.staged = {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
         elif "install.sh" in command:
-            self.version = self.staged["VERSION"].decode().strip()
+            self.install(command, input or "")
+        elif command == 'echo "$SSH_CLIENT"':
+            out = self.ssh_client + "\n"
+        elif "mosquitto_pub" in command:
+            # Settings to try come on stdin; the daemon's are in its files.
+            probe = command.startswith(installer.PROBE)
+            status, err = self.mqtt(input if probe else self.mqtt_config)
         if check and status:
             raise asyncssh.ProcessError(None, command, None, status, None, status, "", "it broke")
-        return SimpleNamespace(exit_status=status, stdout=out, stderr="")
+        return SimpleNamespace(exit_status=status, returncode=status, stdout=out, stderr=err)
 
 
 @pytest.fixture
@@ -125,6 +174,114 @@ def fake_box():
     box = FakeBox()
     with patch("custom_components.batocera.installer.asyncssh.connect", box.connect):
         yield box
+
+
+class FakeMosquitto:
+    """The Mosquitto add-on, as the MQTT integration's AddonManager reports
+    it. Its broker is the one the box reaches at accounts: logins change
+    there when the add-on has restarted, as Home Assistant's own MQTT client
+    connects again."""
+
+    def __init__(self, hass, accounts: dict[str, str]) -> None:
+        self.hass = hass
+        self.accounts = accounts
+        self.state = AddonState.RUNNING
+        self.hostname = "core-mosquitto"
+        self.options = {
+            "logins": [{"username": "zigbee", "password": "zigbee-secret"}],
+            "require_certificate": False,
+            "certfile": "fullchain.pem",
+            "keyfile": "privkey.pem",
+            "customize": {"active": False, "folder": "mosquitto"},
+        }
+        self.restarts = 0
+        self.comes_back = True
+        self.failing: str | None = None  # the name of a method that fails
+        self.accounts.update(self.logins())
+
+    def fail(self, method: str) -> None:
+        if self.failing == method:
+            raise AddonError(f"{method}: the Supervisor said no")
+
+    async def async_get_addon_info(self) -> AddonInfo:
+        self.fail("async_get_addon_info")
+        return AddonInfo(
+            available=True, hostname=self.hostname, options=copy.deepcopy(self.options),
+            state=self.state, update_available=False, version="6.5.2",
+        )
+
+    async def async_set_addon_options(self, config: dict) -> None:
+        self.fail("async_set_addon_options")
+        self.options = copy.deepcopy(config)
+
+    async def async_restart_addon(self) -> None:
+        self.fail("async_restart_addon")
+        self.restarts += 1
+        async_dispatcher_send(self.hass, mqtt.MQTT_CONNECTION_STATE, False)
+        if self.comes_back:
+            self.hass.loop.call_soon(self.started)
+
+    @callback
+    def started(self) -> None:
+        self.accounts.clear()
+        self.accounts.update(self.logins())
+        async_dispatcher_send(self.hass, mqtt.MQTT_CONNECTION_STATE, True)
+
+    def logins(self) -> dict[str, str]:
+        return {x["username"]: x["password"] for x in self.options["logins"]}
+
+
+def mqtt_entry(hass, **data):
+    """Home Assistant's MQTT entry. Taken as loaded: never set up for real."""
+    entry = MockConfigEntry(
+        domain=mqtt.DOMAIN, title="MQTT", data={"broker": "core-mosquitto", "port": 1883} | data,
+        state=config_entries.ConfigEntryState.LOADED,
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+@pytest.fixture
+def supervisor(hass):
+    """Home Assistant OS or Supervised: is_hassio is true."""
+    with patch("custom_components.batocera.mqtt_setup.is_hassio", return_value=True):
+        yield
+
+
+@pytest.fixture
+def mosquitto(hass, fake_box, supervisor):
+    """The Mosquitto add-on, running, used by Home Assistant's MQTT entry,
+    and reached by the box on Home Assistant's address."""
+    mqtt_entry(hass, username="homeassistant", password="ha-secret")
+    addon = FakeMosquitto(hass, fake_box.brokers.setdefault((HA_ADDRESS, 1883), {}))
+    with patch("custom_components.batocera.mqtt_setup.get_addon_manager", return_value=addon):
+        yield addon
+
+
+async def start(hass, step):
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.MENU
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": step}
+    )
+
+
+async def configure(hass, result, user_input):
+    with patch("custom_components.batocera.async_setup_entry", return_value=True):
+        return await hass.config_entries.flow.async_configure(result["flow_id"], user_input)
+
+
+def advanced(result) -> section:
+    return next(v for v in result["data_schema"].schema.values() if isinstance(v, section))
+
+
+def suggested(result):
+    """What the form shows filled in, the Advanced fields included."""
+    keys = [k for k in result["data_schema"].schema if k != "advanced"]
+    keys += list(advanced(result).schema.schema)
+    return {str(key): (key.description or {}).get("suggested_value") for key in keys}
 
 
 @pytest.fixture

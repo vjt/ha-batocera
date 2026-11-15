@@ -17,9 +17,9 @@ from homeassistant.helpers import config_validation as cv, issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
-from . import installer
+from . import installer, mqtt_setup
 from .box import Box
-from .const import CONF_PRIVATE_KEY, DOMAIN
+from .const import CONF_MQTT_LOGIN, CONF_PRIVATE_KEY, DOMAIN
 from .covers import CoverCache
 from .live import LiveView
 
@@ -102,6 +102,8 @@ async def async_remove_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) ->
     await hass.async_add_executor_job(CoverCache.remove, _covers_dir(hass, entry))
     ir.async_delete_issue(hass, DOMAIN, _issue_id(entry))
     ir.async_delete_issue(hass, DOMAIN, _public_web_issue_id(entry))
+    if login := entry.data.get(CONF_MQTT_LOGIN):  # added to the Mosquitto add-on
+        await mqtt_setup.async_remove_login(hass, login)
 
 
 def _covers_dir(hass: HomeAssistant, entry: ConfigEntry) -> Path:

@@ -1,44 +1,36 @@
-"""Config flow tests. The box is a fake: see FakeBox in conftest.py."""
+"""Config flow tests. The box is a fake: see FakeBox in conftest.py. Setting
+up MQTT without asking is in test_mqtt_setup.py; here the broker is given
+under Advanced."""
 
 import json
 import logging
-from unittest.mock import patch
 
 import asyncssh
 import pytest
 
-from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.batocera import installer
 from custom_components.batocera.const import DOMAIN
 
-from conftest import ROOT_PASSWORD, public
+from conftest import ROOT_PASSWORD, advanced, configure, public, start, suggested
 
-INSTALL = {
-    "name": "Living Room",
-    "host": "192.0.2.10",
-    "password": ROOT_PASSWORD,
-    "mqtt_host": "192.0.2.2",
-    "mqtt_port": 1883,
-    "mqtt_user": "box",
-    "mqtt_password": "mqtt-secret",
+BROKER = {
+    "mqtt_host": "192.0.2.2", "mqtt_port": 1883, "mqtt_user": "box", "mqtt_password": "mqtt-secret"
 }
+INSTALL = {
+    "name": "Living Room", "host": "192.0.2.10", "password": ROOT_PASSWORD, "advanced": BROKER
+}
+CHECK = (
+    "XDG_CONFIG_HOME=/userdata/system/ha-batocera timeout 10"
+    " mosquitto_pub -q 1 -n -t batocera/living_room/check"
+)
 
 
-async def start(hass, step):
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
-    )
-    assert result["type"] is FlowResultType.MENU
-    return await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"next_step_id": step}
-    )
-
-
-async def configure(hass, result, user_input):
-    with patch("custom_components.batocera.async_setup_entry", return_value=True):
-        return await hass.config_entries.flow.async_configure(result["flow_id"], user_input)
+@pytest.fixture(autouse=True)
+def broker(fake_box):
+    """The broker of BROKER, with the box's account."""
+    fake_box.brokers[("192.0.2.2", 1883)] = {"box": "mqtt-secret"}
 
 
 async def test_manual(hass):
@@ -63,6 +55,11 @@ async def test_install(hass, fake_box, caplog):
     caplog.set_level(logging.DEBUG)
     result = await start(hass, "install")
     assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "install"  # no Supervisor here
+    fields = [str(k) for k in result["data_schema"].schema]
+    assert fields == ["name", "host", "password", "advanced"]
+    assert [str(k) for k in advanced(result).schema.schema] == list(BROKER)
+    assert advanced(result).options["collapsed"]
     result = await configure(hass, result, INSTALL)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Living Room"
@@ -89,6 +86,13 @@ async def test_install(hass, fake_box, caplog):
     )
     assert stdin == "mqtt-secret\n"
 
+    # Given, the broker is used as is: nothing is looked for. Once installed,
+    # the box connects to it with the daemon's own files.
+    commands = [c for c, _ in fake_box.runs]
+    assert not [c for c in commands if "SSH_CLIENT" in c or "mktemp" in c]
+    assert commands[-1] == CHECK
+    assert fake_box.mqtt_tries == [("192.0.2.2", 1883, "box")]
+
     # Neither password is stored, logged, or put on a command line.
     entry = hass.config_entries.async_entries(DOMAIN)[0]
     stored = json.dumps([dict(entry.data), dict(entry.options)])
@@ -99,21 +103,23 @@ async def test_install(hass, fake_box, caplog):
 
 
 async def test_install_without_mqtt_user(hass, fake_box):
+    fake_box.brokers[("192.0.2.2", 1883)] = None  # anonymous
     result = await start(hass, "install")
-    result = await configure(
-        hass, result, {k: v for k, v in INSTALL.items() if k not in ("mqtt_user", "mqtt_password")}
-    )
+    result = await configure(hass, result, INSTALL | {"advanced": {"mqtt_host": "192.0.2.2"}})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     command, stdin = next((c, i) for c, i in fake_box.runs if "install.sh" in c)
+    assert "MQTT_PORT=1883" in command  # the default
     assert "MQTT_USER" not in command
     assert stdin == "\n"
 
 
-def suggested(result):
-    return {
-        str(key): (key.description or {}).get("suggested_value")
-        for key in result["data_schema"].schema
-    }
+async def test_advanced_needs_a_host(hass, fake_box):
+    result = await start(hass, "install")
+    result = await configure(hass, result, INSTALL | {"advanced": {"mqtt_user": "box"}})
+    assert result["errors"] == {"base": "mqtt_host_required"}
+    assert not advanced(result).options["collapsed"]
+    assert suggested(result)["mqtt_user"] == "box"
+    assert fake_box.runs == []
 
 
 @pytest.mark.parametrize(
@@ -130,9 +136,12 @@ async def test_install_errors(hass, fake_box, attr, value, error):
     result = await configure(hass, result, INSTALL)
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": error}
+    assert advanced(result).options["collapsed"]  # not about the broker
     # Shown again with what was typed, except the passwords.
     values = suggested(result)
+    assert values["host"] == "192.0.2.10"
     assert values["mqtt_host"] == "192.0.2.2"
+    assert values["mqtt_user"] == "box"
     assert values["password"] is None
     assert values["mqtt_password"] is None
     assert hass.config_entries.async_entries(DOMAIN) == []
