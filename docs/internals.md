@@ -229,6 +229,17 @@ everything under it as one list of games, no folder tiles, through the media
 browser id `all:<system>` or `all:<system>:<folder>`, which the tree never
 links to; favourites and recently played are flat already.
 
+The home has the same filters, over every game. Without `system`,
+`batocera/games` answers for every game of every system: the page asks for
+it when a filter is first used at the home, not on every visit, and again
+for a new catalog only while a filter is set there. While one is set, the
+home lists the media browser id `all`, every game of every system by name,
+instead of the system tiles; the page keeps that list for its catalog. The
+home's filters and a system's are separate: each resets when it is left.
+
+The media browser's root lists favourites, recently played, then the
+systems by the name shown, case aside.
+
 The catalog is published when the daemon starts (and again until
 EmulationStation answers), after each game (that system only), every 30
 minutes while no game runs, and on request. Systems that disappear are
