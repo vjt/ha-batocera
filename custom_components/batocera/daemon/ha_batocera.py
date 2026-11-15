@@ -31,6 +31,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
+from stat import S_ISREG
 from typing import NamedTuple
 from urllib.parse import quote
 
@@ -52,6 +53,10 @@ REQ_MAX = 4096          # bigger requests are dropped
 REQ_ID = re.compile(r"^[0-9a-f]{8,32}$")
 # Bytes of UTF-8 an info answer keeps of each text; longer ones are cut.
 INFO_TEXT = {"desc": 2048, "developer": 256, "publisher": 256}
+# Measuring a game for an info answer: at most this much of an .m3u or .cue
+# is read, and a game folder with more files and folders is not measured.
+LIST_MAX = 64 * 1024
+SIZE_ENTRIES = 50_000
 # A search of the descriptions answers with at most as many games as Home
 # Assistant's name search (SEARCH_MAX in browse.py), and only for a query of
 # SEARCH_MIN characters or more: a shorter one is in nearly every description.
@@ -397,6 +402,89 @@ def game_details(game):
     if (seconds := es_int(game.get("gametime"))) > 0:
         details["gametime"] = seconds
     return details
+
+
+# A .cue's FILE line: FILE "Track 01.bin" BINARY, or FILE track.bin BINARY.
+CUE_FILE = re.compile(r'^[ \t]*FILE[ \t]+(?:"([^"]*)"|(\S+))', re.I | re.M)
+
+
+def listed(path):
+    """The files an .m3u (its discs) or a .cue (its tracks) names, each in
+    the list's folder unless absolute; none for another file or a list that
+    cannot be read. Names stay the bytes the list has, whatever their
+    encoding. Only for a regular file: opening a FIFO would wait forever."""
+    kind = os.path.splitext(path)[1].lower()
+    if kind not in (".m3u", ".cue"):
+        return []
+    try:
+        with open(path, "rb") as f:
+            data = f.read(LIST_MAX)
+    except OSError:
+        return []
+    text = data.removeprefix(b"\xef\xbb\xbf").decode(errors="surrogateescape")
+    if kind == ".m3u":
+        names = [line.strip() for line in text.splitlines()]
+        names = [name for name in names if name and not name.startswith("#")]
+    else:
+        names = [quoted or bare for quoted, bare in CUE_FILE.findall(text)]
+    folder = os.path.dirname(path)
+    return [os.path.join(folder, name) for name in names]
+
+
+def folder_sizes(top, sizes, entries=SIZE_ENTRIES):
+    """Every file under the folder top into sizes, symlinks not followed;
+    what cannot be read is left out. False when it holds more than entries
+    files and folders: not measured."""
+    folders = [top]
+    while folders:
+        try:
+            with os.scandir(folders.pop()) as found:
+                for entry in found:
+                    entries -= 1
+                    if entries < 0:
+                        return False
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            folders.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            st = entry.stat(follow_symlinks=False)
+                            sizes[(st.st_dev, st.st_ino)] = st.st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return True
+
+
+def game_size(path, entries=SIZE_ENTRIES):
+    """The bytes a game takes on the box, or None when that cannot be told.
+    A folder: every file under it, symlinks not followed. A file: itself,
+    plus the discs an .m3u lists (and the tracks of a .cue among them), or
+    the tracks a .cue names. Each file is counted once; one missing or
+    unreadable is left out. Never raises: an info answer goes out without."""
+    sizes = {}  # (device, inode) -> bytes: a file listed twice counts once
+
+    def add(name):
+        """Whether name is a regular file, counted."""
+        try:
+            st = os.stat(name)
+        except (OSError, ValueError):  # missing, unreadable, a NUL in a list
+            return False
+        if not S_ISREG(st.st_mode):
+            return False
+        sizes[(st.st_dev, st.st_ino)] = st.st_size
+        return True
+
+    if os.path.isdir(path):
+        if not folder_sizes(path, sizes, entries):
+            log.info("size of %s: more than %d files and folders, not measured", path, entries)
+            return None
+    elif add(path):
+        for part in listed(path):
+            if add(part) and part.lower().endswith(".cue"):  # a disc of an .m3u
+                for track in listed(part):
+                    add(track)
+    return sum(sizes.values()) or None
 
 
 def fold(text):
@@ -950,7 +1038,8 @@ class Daemon:
 
     def req_info(self, rid, req):
         """What the catalog leaves out of a game (game_details), read from
-        EmulationStation one game at a time, as asked."""
+        EmulationStation one game at a time, as asked, and the space it
+        takes (game_size), measured then."""
         rom = self.find_rom(req)
         if rom is None:
             return self.respond(rid, "unknown_game")
@@ -961,7 +1050,10 @@ class Daemon:
             return self.respond(rid, "es_unreachable")
         if game is None:  # gone since the catalog was read
             return self.respond(rid, "unknown_game")
-        self.respond(rid, **game_details(game))
+        details = game_details(game)
+        if size := game_size(rom.path):
+            details["size"] = size
+        self.respond(rid, **details)
 
     def req_launch(self, rid, req):
         """Quit the running game, wait for EmulationStation to be idle, then
