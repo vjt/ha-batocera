@@ -885,6 +885,63 @@ test("filters: a new catalog is asked again, and a value gone goes back to any",
   assert.deepEqual(t.tiles(), ["Sonic the Hedgehog", "Streets of Rage"]);
 });
 
+// --- a game's year and stars ------------------------------------------------
+
+// Each game tile, by title: "<year>|<stars>" at its foot, or "" without.
+const metas = (t) => Object.fromEntries(t.$$(".grid .tile.game").map((n) => {
+  const m = n.querySelector(".tm");
+  return [n.querySelector(".tn").textContent, m ? `${m.querySelector(".ty").textContent}|${m.querySelector(".tr").textContent}` : ""];
+}));
+const homeAsks = (t) => t.asked("batocera/games").filter((m) => !m.system).length;
+
+test("a game's tile: its year on the left, its stars on the right", async () => {
+  const t = await filtered();
+  await t.open("Sega Mega Drive");
+  await flush();
+  const meta = metas(t);
+  assert.equal(meta["Sonic the Hedgehog"], "1991|★★★");
+  assert.equal(meta["Streets of Rage"], "1991|★★★★");
+  assert.equal(meta["Pokémon Crystal"], "2000|");
+  assert.equal(meta.Bare, "");  // neither: no foot
+  assert.equal(homeAsks(t), 0);  // the system's facts serve
+});
+
+test("recent and favourites of all systems: every game's facts, asked once", async () => {
+  const t = await filtered();
+  await t.open("Recently played");
+  await flush();
+  const meta = metas(t);
+  assert.equal(meta["Super Mario World"], "1990|");
+  assert.equal(meta["Streets of Rage"], "1991|★★★★");
+  assert.equal(homeAsks(t), 1);
+  t.$(".back").click();
+  await flush();
+  await t.open("Favourites");
+  await flush();
+  assert.equal(metas(t)["Sonic the Hedgehog"], "1991|★★★");
+  assert.equal(homeAsks(t), 1);
+  assert.ok(!t.shown(".filters"));  // still none there
+});
+
+test("a search at the home: years and stars too", async () => {
+  const t = await filtered();
+  await t.search("mario");
+  await flush();
+  assert.equal(metas(t)["Super Mario World"], "1990|");
+  assert.equal(homeAsks(t), 1);
+});
+
+test("facts refused: the tiles go without, and are not asked again", async () => {
+  const t = await mount();
+  await t.open("Recently played");
+  await flush();
+  await t.set(idleStates());
+  await flush();
+  assert.equal(homeAsks(t), 1);
+  assert.equal(t.$$(".grid .tile .tm").length, 0);
+  assert.equal(t.tiles().length, 3);
+});
+
 test("the running game stands out", async () => {
   const t = await mount(playingStates());
   await t.open("Sega Mega Drive");
