@@ -246,6 +246,21 @@ minutes while no game runs, and on request. Systems that disappear are
 cleared. Covers for it are sent on request, downscaled to 256 pixels at the
 lowest CPU priority, and kept by Home Assistant for a week.
 
+The page's launch dialog says what the game is. `batocera/games` with
+`game` (a game id) answers for that game only; each game's facts there are
+`genre`, `year` and `rating`, plus `players`, `playcount` and `lastplayed`
+when there are (most games were never played). The rest is not in the
+catalog, a description per game being too much for it: the dialog asks
+`batocera/info` (`entry_id`, `game`), and Home Assistant asks the box (the
+`info` request below) and answers `desc`, `developer`, `publisher` and
+`gametime` (seconds played in all, as EmulationStation counts them), each
+left out when there is none. Home Assistant keeps the answer for a week,
+like a cover, in memory and next to the covers on disk, but only while the
+game's last played in the catalog stays the same: a game played since is
+asked again, for its new total. When the box cannot say (offline, busy, or a
+daemon before 0.8, which answers `bad_request`), `batocera/info` answers
+`{}`, nothing is kept, and the dialog shows the catalog's facts alone.
+
 ### Requests
 
 Home Assistant sends requests on `req`, as JSON with an `id` of 8 to 32
@@ -255,6 +270,7 @@ bigger than 4 KB, or without a valid id, are dropped.
 | `op` | Other fields | Answer when it works |
 |------|--------------|----------------------|
 | `cover` | `system`, `game` (an id from the catalog) | `jpeg`: the cover, base64, at most 256 px a side |
+| `info` | `system`, `game` | `desc`, `developer`, `publisher` (text; the description cut at 2 KB, the others at 256 bytes) and `gametime` (seconds played in all), each left out when empty; from EmulationStation's `/systems/<system>/games/<id>`, one game at a time |
 | `launch` | `system`, `game` | nothing more, once EmulationStation was asked to launch it |
 | `pause` | `paused`: `true` or `false` | `paused`: what the daemon believes now |
 | `refresh` | none | nothing more; the catalog is read again |
