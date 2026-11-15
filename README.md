@@ -8,10 +8,11 @@ the TV live, quit a stuck game, and set daily playtime limits.
 <p>
   <img src="docs/page-games.jpg" width="300" alt="The Batocera page on a phone: nothing playing, the box's systems as tiles">
   <img src="docs/page-live.webp" width="300" alt="The Batocera page on a phone: Super Mario Bros. Wonder playing, the TV shown live at about one frame a second">
-  <img src="docs/page-home.jpg" width="300" alt="The Batocera page on a phone: a game playing, the filters at the top of the home, the systems by name">
+  <img src="docs/page-home.jpg" width="300" alt="The Batocera page on a phone: a game playing, 11579 games on the box, the filters at the top of the home, the systems by name">
   <img src="docs/page-recent.jpg" width="300" alt="The Batocera page on a phone: the recently played games, the one playing now marked">
-  <img src="docs/page-launch.jpg" width="300" alt="The Batocera page on a phone: starting 1080 Avalanche, which will quit the game playing now">
-  <img src="docs/page-filters.jpg" width="300" alt="The Batocera page on a phone: the home filtered to 2010s platform games of four stars or more, each tile naming its system">
+  <img src="docs/page-folders.jpg" width="300" alt="The Batocera page on a phone: Nintendo 64, 259 games, its ROMs sorted into folders by genre">
+  <img src="docs/page-filters.jpg" width="300" alt="The Batocera page on a phone: the home filtered to 1980s platform games and searched for mario, 9 found, each tile naming its system">
+  <img src="docs/page-launch.jpg" width="300" alt="The Batocera page on a phone: Metal Sonic Rebooted about to start, with its year, genre, players, rating, authors and description, quitting the game playing now">
 </p>
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=vjt&repository=ha-batocera&category=integration)
@@ -19,11 +20,13 @@ the TV live, quit a stuck game, and set daily playtime limits.
 ## What you get
 
 - **A Batocera page** in Home Assistant's sidebar: the box's games with their
-  covers, favourites, recently played, one tile per system and per ROM folder,
+  covers, favourites, recently played, one tile per system and per ROM folder
+  (ROMs sorted into folders, by genre or anything else, are browsed as such),
   a search that works at every level, and the games filtered by genre,
-  decade and rating, in a system or across all of them. Tap a game to see
-  what it is (year, genre, players, rating, who made it, how much it was
-  played, its description), PRESS START, and it starts on the TV.
+  decade and rating, in a system or across all of them. Each place says how
+  many games it holds, and a search or the filters how many they found. Tap a
+  game to see what it is (year, genre, players, rating, who made it, how much
+  it was played, its description), PRESS START, and it starts on the TV.
 - **What is playing**: game, system, emulator, cover, since when, and the
   minutes played today.
 - **The TV screen**, menus included: a screenshot every 15 seconds, and live
