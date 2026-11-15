@@ -97,10 +97,9 @@ async def test_games_for_the_filters(hass, mqtt_mock, setup, hass_ws_client):
     await publish_catalog(hass, rows=rows)
     client = await hass_ws_client(hass)
 
-    async def games(system, entry_id=setup.entry_id):
-        await client.send_json_auto_id(
-            {"type": "batocera/games", "entry_id": entry_id, "system": system}
-        )
+    async def games(system=None, entry_id=setup.entry_id):
+        msg = {"type": "batocera/games", "entry_id": entry_id}
+        await client.send_json_auto_id(msg | ({"system": system} if system else {}))
         return await client.receive_json()
 
     assert (await games("megadrive"))["result"] == {
@@ -113,6 +112,13 @@ async def test_games_for_the_filters(hass, mqtt_mock, setup, hass_ws_client):
     }
     assert (await games("nes"))["result"] == {}
     assert (await games("megadrive", "nope"))["error"]["code"] == "not_found"
+    # Without a system, every game: the home's filters.
+    assert (await games())["result"] == {
+        SONIC: {"genre": "Platform / Run & Jump", "year": 1991, "rating": 0.75},
+        SOR: {"genre": "Beat'em up", "year": 1991, "rating": None},
+        BARE: {"genre": "None", "year": None, "rating": None},
+        MARIO: {"genre": "", "year": 1990, "rating": None},
+    }
 
 
 SVG = b'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"/>'
@@ -394,12 +400,23 @@ async def test_browse_flat_for_the_filters(hass, mqtt_mock, setup, hass_ws_clien
     assert [t for _, t in children(await browse(hass, client, "all:mame:Fighter"))] == [
         "Killer Instinct", "Street Fighter II"
     ]
+    # Every game of every system, by name: the home's filters.
+    every = (await browse(hass, client, "all"))["result"]
+    assert every["title"] == "Arcade"
+    assert children({"result": every}) == [
+        (f"game:mame:{gid(1)}", "1942"), (f"game:megadrive:{BARE}", "Bare"),
+        (f"game:mame:{gid(2)}", "Galaxian"), (f"game:mame:{gid(3)}", "Killer Instinct"),
+        (f"game:mame:{gid(4)}", "Pac-Land Demo"), (f"game:mame:{gid(5)}", "Quiz Show"),
+        (f"game:megadrive:{SONIC}", "Sonic the Hedgehog"),
+        (f"game:mame:{gid(6)}", "Street Fighter II"),
+        (f"game:megadrive:{SOR}", "Streets of Rage"), (f"game:snes:{MARIO}", "Super Mario World"),
+    ]
     for bad in ("all:mame:Nope", "all:mame:Fight", "all:nes", "all:"):
         assert (await browse(hass, client, bad))["success"] is False, bad
     # The tree never leads there.
     for cid in ("", "system:mame", "dir:mame:Extra"):
         kids = (await browse(hass, client, cid))["result"]["children"]
-        assert not [c for c in kids if c["media_content_id"].startswith("all:")]
+        assert not [c for c in kids if c["media_content_id"].partition(":")[0] == "all"]
 
 
 def test_search_everywhere():
