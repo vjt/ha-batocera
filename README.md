@@ -9,6 +9,7 @@ the TV live, quit a stuck game, and set daily playtime limits.
   <img src="docs/page-games.jpg" width="300" alt="The Batocera page on a phone: nothing playing, the box's systems as tiles">
   <img src="docs/page-live.jpg" width="300" alt="The Batocera page on a phone: Mario Kart 8 Deluxe playing, the TV shown live">
   <img src="docs/page-home.jpg" width="300" alt="The Batocera page on a phone: a game playing, the filters at the top of the home, the systems by name">
+  <img src="docs/page-recent.jpg" width="300" alt="The Batocera page on a phone: the recently played games, the one playing now marked">
   <img src="docs/page-filters.jpg" width="300" alt="The Batocera page on a phone: the home filtered to 2010s platform games of four stars or more, each tile naming its system">
 </p>
 
