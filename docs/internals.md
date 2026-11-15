@@ -52,6 +52,24 @@ flowchart LR
   limits see an ordinary launch.
 - Pause sends the emulator's pause hotkey through Batocera's `hotkeygen`,
   offered when the emulator has one.
+- Shut down does what EmulationStation's SHUTDOWN SYSTEM does: that one
+  quits, saving the gamelists, touches `/tmp/shutdown.please` (with it,
+  `emulationstation-standalone` does not start it again) and runs
+  `shutdown -P -h now`. Its web API has no call for that, so the daemon
+  quits the running game as `stop` does, waits for EmulationStation to be
+  idle, touches the flag, asks `/quit`, and runs `shutdown -P -h now` once
+  EmulationStation has left (60 seconds at most). Stopping EmulationStation
+  with a SIGTERM, as `poweroff` and its init script do, saves nothing.
+- Power on is Wake-on-LAN, sent by Home Assistant itself (UDP port 9, six
+  `FF` bytes then the MAC address sixteen times) to the box's subnet's
+  broadcast address: Home Assistant may have several networks, and
+  `255.255.255.255` leaves from the default route's. The daemon reports
+  the MAC and broadcast addresses of its default route's interface, and
+  its Wake-on-LAN setting; when that is off but the card can wake on the
+  magic packet, it turns it on (`ethtool -s <interface> wol g`), once
+  each time it starts. Home Assistant keeps the last report for when the
+  box is off; the integration's options can override both addresses,
+  under Advanced.
 
 ## The installer
 
@@ -170,6 +188,7 @@ All under `batocera/<device>/` (the prefix is set by `topic_prefix` and
 | `pausable` | yes | box | `ON` / `OFF`: whether the running emulator has a pause hotkey; empty when idle or not known |
 | `paused` | yes | box | `ON` / `OFF`, as far as the daemon knows; empty when idle |
 | `public_web_access` | yes | box | `ON` / `OFF`: whether EmulationStation's web API is open to the network |
+| `network` | yes | box | JSON: how to wake the box, see below |
 | `catalog/index` | yes | box | JSON: the systems in the catalog, see below |
 | `catalog/system/<name>` | yes | box | gzip-compressed JSON: the games of one system, see below |
 | `catalog/logo/<name>` | yes | box | raw SVG, PNG or JPEG bytes (at most 256 KB): the system's logo from the theme; empty when there is none |
@@ -182,6 +201,20 @@ All under `batocera/<device>/` (the prefix is set by `topic_prefix` and
 
 An empty retained message clears the topic. When a game ends, `last_session`
 is published before `state` turns `idle`.
+
+`network` is the interface of the IPv4 default route, from `ip -j`, and
+its Wake-on-LAN setting, from `ethtool`, checked when the daemon starts
+(every 30 seconds until there is a default route) and every 30 minutes,
+and published when it changes:
+
+```json
+{"interface": "eth0", "mac": "38:05:25:0a:0b:0c", "broadcast": "192.168.1.255",
+ "wake_on": "g", "supports_wake_on": "pumbg"}
+```
+
+`wake_on` and `supports_wake_on` are `ethtool`'s letters, `g` being the
+magic packet; a field it cannot tell is empty. Home Assistant shows them as
+the diagnostic Wake-on-LAN binary sensor.
 
 If your broker uses ACLs, the box needs to publish to `batocera/<device>/#`
 and to subscribe to its `cmd`, `lock`, `req`, `watch`, `availability` and
@@ -288,12 +321,13 @@ bigger than 4 KB, or without a valid id, are dropped.
 | `launch` | `system`, `game` | nothing more, once EmulationStation was asked to launch it |
 | `pause` | `paused`: `true` or `false` | `paused`: what the daemon believes now |
 | `refresh` | none | nothing more; the catalog is read again |
+| `shutdown` | none | nothing more, once EmulationStation was asked to quit; the box then powers off (see How it works). `busy` when EmulationStation is not idle 10 seconds after the game, `es_unreachable` when it does not answer: the box stays on. Without EmulationStation running, the box powers off at once |
 | `search` | `query` (text), optionally `system` | `games`: the ids of the games (of that system, or of all) whose description holds the query and whose name does not, by name, at most 200; none for a query under 3 characters. Accents, case and line breaks aside; from the descriptions the daemon keeps with the catalog, EmulationStation is not asked |
 
 Answers are `{"id": ..., "ok": true, ...}` or `{"id": ..., "ok": false,
 "error": ...}`, where the error is one of `bad_request`, `unknown_game`,
 `no_cover`, `locked`, `busy`, `not_playing`, `not_pausable`,
-`es_unreachable` or `failed`.
+`es_unreachable`, `shutting_down` or `failed`.
 
 The box launches only games from its own catalog: a request names a game by
 its id, never by a path. It refuses to launch while the lock is on. A launch
@@ -303,6 +337,11 @@ to be idle again.
 Pause sends the emulator its pause hotkey through Batocera's `hotkeygen`.
 The hotkey toggles, and the emulator says nothing back: `paused` is the
 daemon's belief, not a measurement.
+
+While the box shuts down, a launch or another shutdown answers
+`shutting_down`, a launch waiting for EmulationStation is answered so, and
+a game that starts anyway is quit. A daemon from before shutdowns answers
+`bad_request`, and Home Assistant says it must be updated.
 
 ## Development
 
