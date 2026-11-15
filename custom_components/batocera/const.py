@@ -4,6 +4,8 @@ DOMAIN = "batocera"
 CONF_TOPIC = "topic"
 CONF_HOST_KEY = "host_key"
 CONF_PRIVATE_KEY = "private_key"
+# The box's login on the Mosquitto add-on, when Home Assistant added it.
+CONF_MQTT_LOGIN = "mqtt_login"
 # Options: the users, besides admins, who may launch, pause and stop games.
 CONF_CONTROL_USERS = "control_users"
 DEFAULT_TOPIC = "batocera/batocera"
