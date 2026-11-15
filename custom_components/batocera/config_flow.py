@@ -34,10 +34,13 @@ from .const import (
     CONF_CONTROL_USERS,
     CONF_MQTT_LOGIN,
     CONF_TOPIC,
+    CONF_WAKE_BROADCAST,
+    CONF_WAKE_MAC,
     DEFAULT_HOST,
     DEFAULT_TOPIC,
     DOMAIN,
 )
+from .wake import ipv4_address, mac_address
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -246,19 +249,53 @@ class BatoceraConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="reconfigure", data_schema=schema, errors=errors)
 
 
+# Where Power on sends the magic packet, when what the box reports will not
+# do: empty, the box's own.
+WAKE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_WAKE_MAC): str,
+        vol.Optional(CONF_WAKE_BROADCAST): str,
+    }
+)
+
+
+def _wake_options(fields: Mapping[str, Any]) -> tuple[dict[str, str], str | None]:
+    """The overrides typed under Advanced, checked: (options, error)."""
+    options: dict[str, str] = {}
+    for key, check, error in (
+        (CONF_WAKE_MAC, mac_address, "invalid_mac"),
+        (CONF_WAKE_BROADCAST, ipv4_address, "invalid_broadcast"),
+    ):
+        if text := str(fields.get(key) or "").strip():
+            if (value := check(text)) is None:
+                return {}, error
+            options[key] = value
+    return options, None
+
+
 class BatoceraOptionsFlow(OptionsFlow):
-    """Who may launch, pause and stop games, besides admins."""
+    """Who may launch, pause and stop games, and power the box on and off,
+    besides admins; under Advanced, where to wake the box."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        options = self.config_entry.options
+        picked = options.get(CONF_CONTROL_USERS, [])
+        wake = {k: options[k] for k in (CONF_WAKE_MAC, CONF_WAKE_BROADCAST) if k in options}
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            picked = user_input.get(CONF_CONTROL_USERS, [])
+            wake = dict(user_input.get(ADVANCED, {}))
+            checked, error = _wake_options(wake)
+            if error is None:
+                return self.async_create_entry(data={CONF_CONTROL_USERS: picked, **checked})
+            errors["base"] = error
         users = [
             u
             for u in await self.hass.auth.async_get_users()
             if not u.system_generated and u.is_active and not u.is_admin
         ]
         ids = {u.id for u in users}
-        current = [i for i in self.config_entry.options.get(CONF_CONTROL_USERS, []) if i in ids]
+        current = [i for i in picked if i in ids]
         schema = vol.Schema(
             {
                 vol.Optional(CONF_CONTROL_USERS, default=current): SelectSelector(
@@ -270,6 +307,14 @@ class BatoceraOptionsFlow(OptionsFlow):
                         multiple=True,
                     )
                 ),
+                # Optional: what calls the flow without it sets no override.
+                vol.Optional(ADVANCED, default={}): section(
+                    WAKE_SCHEMA, {"collapsed": not (wake or errors)}
+                ),
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(schema, {ADVANCED: wake}),
+            errors=errors,
+        )

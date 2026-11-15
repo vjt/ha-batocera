@@ -34,7 +34,7 @@ from .entity import LiveEntity
 # game first (up to 15 s) and waits for EmulationStation (up to 10 s).
 LAUNCH_TIMEOUT = 40
 # The daemon's refusals that have a message of their own.
-LAUNCH_ERRORS = ("busy", "es_unreachable", "locked", "timeout", "unknown_game")
+LAUNCH_ERRORS = ("busy", "es_unreachable", "locked", "shutting_down", "timeout", "unknown_game")
 PAUSE_ERRORS = ("not_playing", "not_pausable", "timeout")
 
 STATES = {

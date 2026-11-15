@@ -27,7 +27,15 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_CONTROL_USERS, CONF_TOPIC, DOMAIN, EVENT_WARNING
+from .const import (
+    CONF_CONTROL_USERS,
+    CONF_TOPIC,
+    CONF_WAKE_BROADCAST,
+    CONF_WAKE_MAC,
+    DOMAIN,
+    EVENT_WARNING,
+)
+from .wake import LIMITED_BROADCAST, ipv4_address, mac_address
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +50,29 @@ LOGO_MAX = 256 * 1024  # system logos bigger than this are ignored
 GAME_ID = re.compile(r"^[0-9a-f]{12}$")
 SYSTEM_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 FAVOURITE, HAS_COVER = 1, 2  # row flags, as the daemon sets them
+WAKE_ON = re.compile(r"^[a-z]{0,16}$")  # ethtool's Wake-on letters ("g": magic packet)
+INTERFACE = re.compile(r"^[\w.:-]{1,15}$")
+
+
+def _network(text: str) -> dict[str, str] | None:
+    """The daemon's network report (see docs/internals.md), its fields
+    checked; None when it is not one or names no MAC address, so that the
+    last one is kept."""
+    try:
+        report = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(report, dict) or not (mac := mac_address(report.get("mac"))):
+        return None
+    network = {"mac": mac}
+    if broadcast := ipv4_address(report.get("broadcast")):
+        network["broadcast"] = broadcast
+    if isinstance(iface := report.get("interface"), str) and INTERFACE.match(iface):
+        network["interface"] = iface
+    for key in ("wake_on", "supports_wake_on"):
+        if isinstance(value := report.get(key), str) and WAKE_ON.match(value):
+            network[key] = value
+    return network
 
 
 class BoxError(Exception):
@@ -232,6 +263,9 @@ class Box:
         self.pausable: bool | None = None  # None: not known
         self.public_web: bool | None = None  # EmulationStation's API open to the network
         self.paused = False
+        # How to wake the box, as it last reported it: kept in the store,
+        # for when it is off.
+        self.network: dict[str, str] = {}
 
         # The catalog: systems as listed by catalog/index, their games, and
         # every game by id.
@@ -274,6 +308,9 @@ class Box:
             self.played = data["played"]
             if data["counted_start"]:
                 self.counted_start = dt_util.parse_datetime(data["counted_start"])
+            self.network = dict(data.get("network") or {})  # older stores have none
+        # The options say how to wake the box, too.
+        entry.async_on_unload(entry.add_update_listener(self._options_changed))
         entry.async_on_unload(
             await mqtt.async_subscribe(
                 self.hass, f"{self.prefix}/+", self._on_message, qos=1, encoding=None
@@ -334,6 +371,9 @@ class Box:
         for listener in list(self._listeners):
             listener()
 
+    async def _options_changed(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self._update()
+
     # --- MQTT -----------------------------------------------------------
 
     @callback
@@ -375,6 +415,11 @@ class Box:
             self.public_web = {"ON": True, "OFF": False}.get(text)
         elif leaf == "started_at":
             self.started_at = dt_util.parse_datetime(text) if text else None
+        elif leaf == "network":
+            if (network := _network(text)) is None or network == self.network:
+                return
+            self.network = network
+            self._save()
         elif leaf == "last_session":
             self._count_session(text)
         elif leaf == "lock":  # our own retained message
@@ -523,6 +568,20 @@ class Box:
     async def async_stop(self) -> None:
         await mqtt.async_publish(self.hass, f"{self.prefix}/cmd", "stop", 1, False)
 
+    # --- power -------------------------------------------------------------
+
+    def wake_target(self) -> tuple[str, str] | None:
+        """Where the magic packet goes, (MAC, broadcast address): the
+        options' overrides, else what the box last reported; the limited
+        broadcast when no subnet is known. None without a MAC."""
+        options = self.entry.options
+        if not (mac := options.get(CONF_WAKE_MAC) or self.network.get("mac")):
+            return None
+        broadcast = (
+            options.get(CONF_WAKE_BROADCAST) or self.network.get("broadcast") or LIMITED_BROADCAST
+        )
+        return mac, broadcast
+
     # --- playtime -------------------------------------------------------
 
     def _count_session(self, text: str) -> None:
@@ -652,4 +711,5 @@ class Box:
             "day": self.day.isoformat(),
             "played": self.played,
             "counted_start": self.counted_start.isoformat() if self.counted_start else None,
+            "network": self.network,
         }

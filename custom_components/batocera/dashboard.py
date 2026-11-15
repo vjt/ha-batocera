@@ -40,6 +40,8 @@ ROLES = {
     "limit": ("number", "daily_limit"),
     "manual": ("switch", "manual_lock"),
     "screen": ("image", "screen"),
+    "shutdown": ("button", "shutdown"),
+    "power_on": ("button", "power_on"),
 }
 
 
