@@ -359,9 +359,12 @@ const STYLE = `
   .dir.system.logo .art { display: flex; aspect-ratio: 2 / 1; min-height: 0; background: transparent; }
   .dir.system.logo .art.none { display: none; }
 
+  /* Under Home Assistant's top bar, never over it; clear of the phone's
+     notch and home bar. */
   .sheet {
-    position: fixed; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center;
-    padding: 16px; background: rgba(0, 0, 0, 0.78);
+    position: fixed; inset: 0; top: calc(var(--header-height, 56px) + env(safe-area-inset-top, 0px));
+    z-index: 5; display: flex; align-items: center; justify-content: center;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px)); background: rgba(0, 0, 0, 0.78);
   }
   .sheet .panel {
     width: min(100%, 420px); max-height: 100%; overflow: auto; box-sizing: border-box;
