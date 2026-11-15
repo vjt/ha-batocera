@@ -80,6 +80,10 @@ const el = (tag, cls, text) => {
   if (text !== undefined) node.textContent = text;
   return node;
 };
+// A filter's choice, on the label under its see-through select.
+const showChoice = (select) => {
+  select.previousElementSibling.textContent = select.selectedOptions[0]?.textContent ?? "";
+};
 const pad = (n) => String(n).padStart(2, "0");
 // 1:02:03 or 2:03, for the time played.
 const clock = (seconds) => {
@@ -183,7 +187,7 @@ const STYLE = `
     background: repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0, 0, 0, 0.08) 2px 3px);
   }
   .title, .clock .label, .clock .left, .banner .big, .where, button, .badge,
-  .nosignal, .stitle, .status .big, .dir .tn {
+  .nosignal, .stitle, .status .big, .dir .tn, .pick {
     font-family: var(--bt-pixel); text-transform: uppercase; letter-spacing: 0.04em;
   }
 
@@ -213,7 +217,7 @@ const STYLE = `
   }
   button:hover:not(:disabled) { background: rgba(62, 244, 255, 0.1); }
   button:active:not(:disabled) { transform: translateY(1px); }
-  button:focus-visible, .search:focus-visible, .filters select:focus-visible {
+  button:focus-visible, .search:focus-visible, .pick:has(select:focus-visible) {
     outline: 2px solid var(--bt-yellow); outline-offset: 2px;
   }
   button:disabled { cursor: default; opacity: 0.45; box-shadow: none; }
@@ -255,12 +259,26 @@ const STYLE = `
   }
   .search::placeholder { color: var(--bt-dim); font-family: var(--bt-pixel); font-size: 10px; }
   .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0; }
-  .filters select {  /* 16px, as the search: smaller, and phones zoom in on a tap */
-    flex: 1 1 120px; min-width: 0; min-height: 44px; padding: 8px; font: inherit; font-size: 16px;
-    color: var(--bt-fg); background: var(--bt-panel); border: 2px solid var(--bt-edge); border-radius: 0;
-    color-scheme: dark;
+  /* A filter looks like the buttons. The select itself stays at 16px (smaller,
+     and phones zoom in on a tap), see-through, over a label in the pixel font. */
+  .pick {
+    position: relative; flex: 1 1 120px; min-width: 0; min-height: 44px; box-sizing: border-box;
+    display: flex; align-items: center; padding: 10px 26px 10px 10px; font-size: 10px;
+    color: var(--bt-cyan); border: 2px solid currentColor;
+    box-shadow: 0 0 6px rgba(62, 244, 255, 0.25), inset 0 0 6px rgba(62, 244, 255, 0.15);
   }
-  .filters select:disabled { opacity: 0.45; }
+  .pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pick::after {  /* the arrow */
+    content: ""; position: absolute; right: 9px; top: 50%; margin-top: -2px;
+    border: 5px solid transparent; border-top-color: currentColor; border-bottom: 0;
+  }
+  .pick select {
+    position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer;
+    font-size: 16px; color-scheme: dark;
+  }
+  .pick:hover:not(:has(select:disabled)) { background: rgba(62, 244, 255, 0.1); }
+  .pick:has(select:disabled) { opacity: 0.45; box-shadow: none; }
+  .pick select:disabled { cursor: default; }
   .status { text-align: center; padding: 32px 8px; }
   .status .big { font-size: 13px; color: var(--bt-dim); }
   .status .note { margin-top: 10px; font-size: 13px; color: var(--bt-dim); }
@@ -443,7 +461,8 @@ class BatoceraCard extends HTMLElement {
               `<button type="button" data-kind="${kind}">${STRINGS[label]}</button>`).join("")}</div>
           </div>
           <div class="filters">${FILTERS.map((key) =>
-            `<select data-filter="${key}" aria-label="${STRINGS.filters[key]}"></select>`).join("")}
+            `<label class="pick"><span></span>
+              <select data-filter="${key}" aria-label="${STRINGS.filters[key]}"></select></label>`).join("")}
             <button class="reset" type="button">${STRINGS.resetFilters}</button>
           </div>
           <input class="search" type="search" placeholder="${STRINGS.search}" aria-label="${STRINGS.search}">
@@ -490,6 +509,7 @@ class BatoceraCard extends HTMLElement {
     });
     this.$.filters.addEventListener("change", (e) => {
       this._filters[e.target.dataset.filter] = e.target.value;
+      showChoice(e.target);
       this._refilter();
     });
     this.$.reset.addEventListener("click", () => {
@@ -721,6 +741,7 @@ class BatoceraCard extends HTMLElement {
         ...offer[key].map(([v, label]) => option(v, label)));
       select.value = value;
       select.disabled = !offer[key].length;
+      showChoice(select);
     }
   }
 
