@@ -613,6 +613,21 @@ class BatoceraCard extends HTMLElement {
     this.$.sheet.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this._close();
     });
+    // While the sheet is open a drag moves only what inside it can still
+    // scroll that way: never the page under it, that on iOS a pull down
+    // would reload.
+    let lastY = 0;
+    this.$.sheet.addEventListener("touchstart", (e) => { lastY = e.touches[0].clientY; }, { passive: true });
+    this.$.sheet.addEventListener("touchmove", (e) => {
+      const y = e.touches[0].clientY;
+      const down = y > lastY;
+      lastY = y;
+      for (let node = e.target; node && node !== this.$.sheet; node = node.parentElement) {
+        if (node.scrollHeight <= node.clientHeight || !/auto|scroll/.test(getComputedStyle(node).overflowY)) continue;
+        if (down ? node.scrollTop > 0 : node.scrollTop + node.clientHeight < node.scrollHeight - 1) return;
+      }
+      if (e.cancelable) e.preventDefault();
+    }, { passive: false });
     this._stack = [{ id: "", title: "" }];
     this._filters = {};  // filter -> the value chosen, "" for any
     this._filterPlace = null;  // where they are for (see placeOf); none yet
