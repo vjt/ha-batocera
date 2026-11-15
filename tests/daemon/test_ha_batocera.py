@@ -1349,6 +1349,7 @@ class RequestTest(unittest.TestCase):
                 self.clock.t += hb.SHUTDOWN_POLL
                 self.d.run_timers()
         self.assertEqual(self.errors(), ["busy"])
+        self.run.calls.clear()
         self.fake.running = None
         self.fake.quit_status = 500
         with self.assertLogs(hb.log, "WARNING"):

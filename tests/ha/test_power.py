@@ -191,15 +191,15 @@ async def test_power_on_from_the_options(hass, mqtt_mock, setup, magic):
 
 
 @pytest.mark.parametrize(
-    ("advanced", "error"),
+    ("fields", "error"),
     [({"wake_mac": "38:05:25:0a:0b"}, "invalid_mac"),
      ({"wake_mac": MAC, "wake_broadcast": "192.0.2"}, "invalid_broadcast")],
 )
-async def test_options_refuse_what_is_not_an_address(hass, mqtt_mock, setup, advanced, error):
+async def test_options_refuse_what_is_not_an_address(hass, mqtt_mock, setup, fields, error):
     result = await hass.config_entries.options.async_init(setup.entry_id)
     assert advanced(result).options["collapsed"]  # nothing set
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"advanced": advanced}
+        result["flow_id"], {"advanced": fields}
     )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": error}
