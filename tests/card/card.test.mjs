@@ -676,10 +676,34 @@ test("home filters and search: names matched here, among every game", async () =
   await t.search("street");
   assert.deepEqual(t.tiles(), ["Streets of Rage"]);
   assert.equal(t.asked("media_player/search_media").length, 1);
-  t.$(".filters .reset").click();  // none set: Home Assistant's search again
+  t.$(".filters .reset").click();  // the filters and the query, both gone
   await flush();
-  assert.equal(t.asked("media_player/search_media").length, 2);
-  assert.deepEqual(t.tiles(), ["Streets of Rage"]);
+  await wait(SEARCH_WAIT);
+  assert.equal(t.$(".search").value, "");
+  assert.equal(t.asked("media_player/search_media").length, 1);
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
+  assert.ok(!t.shown(".filters .reset"));
+});
+
+test("a search alone shows reset, which clears it", async () => {
+  const t = await filtered();
+  assert.ok(!t.shown(".filters .reset"));
+  await t.search("mario");
+  assert.deepEqual(t.tiles(), ["Super Mario World"]);
+  assert.ok(t.shown(".filters .reset"));
+  t.$(".filters .reset").click();
+  await flush();
+  assert.equal(t.$(".search").value, "");
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
+  assert.ok(!t.shown(".filters .reset"));
+  await t.open("Sega Mega Drive");
+  await flush();
+  await t.type("s");  // in a system too
+  assert.ok(t.shown(".filters .reset"));
+  t.$(".filters .reset").click();
+  await flush();
+  assert.equal(t.tiles().length, 4);
+  assert.ok(!t.shown(".filters .reset"));
 });
 
 test("the home and each system have filters of their own", async () => {

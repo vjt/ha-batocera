@@ -582,7 +582,10 @@ class BatoceraCard extends HTMLElement {
       showChoice(e.target);
       this._refilter();
     });
+    // Reset: the filters and the search, both gone at once.
     this.$.reset.addEventListener("click", () => {
+      this.$.search.value = "";
+      this._dropSearch();
       this._resetFilters();
       this._refilter();
     });
@@ -1146,7 +1149,7 @@ class BatoceraCard extends HTMLElement {
     // one asks for them.
     const home = this._filterPlace === "" && !!this._config.entry_id;
     this.$.filters.classList.toggle("hidden", !(games || home) || big === STRINGS.noCatalog);
-    this.$.reset.classList.toggle("hidden", !filtering);
+    this.$.reset.classList.toggle("hidden", !(filtering || text));
 
     const playing = this._player().attr.media_content_id;
     this._items = big && big !== STRINGS.noMatch ? [] : shown;
