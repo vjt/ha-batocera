@@ -6,10 +6,11 @@
 //   name: Arcade
 //   entry_id: <the box's config entry>
 //   entities: {player: media_player.arcade, locked: binary_sensor.arcade_locked,
-//              started: sensor.arcade_session_start, ...}
+//              started: sensor.arcade_session_start, shutdown: button.arcade_shut_down,
+//              power_on: button.arcade_power_on, ...}
 // What it shows comes from those entities; what it does goes through the
-// media player's services, which check the user's rights and the limits
-// again. Missing roles are simply not shown.
+// media player's services and the power buttons, which check the user's
+// rights and the limits again. Missing roles are simply not shown.
 
 // Every text the card shows, in one table.
 const STRINGS = {
@@ -24,6 +25,11 @@ const STRINGS = {
   resume: "▶ RESUME",
   kill: "✖ KILL",
   killSure: "💣 SURE?",
+  shutDown: "⏻ SHUT DOWN",
+  shutDownSure: "⏻ SURE?",
+  goingOff: "⏻ BYE…",
+  powerOn: "⏻ POWER ON",
+  waking: "⏻ WAKING…",
   offline: "OFFLINE",
   offlineNote: "NO SIGNAL FROM THE BOX",
   locked: "GAME OVER — LOCKED",
@@ -70,8 +76,10 @@ const STRINGS = {
   playTime: (time) => `${time} in all`,
 };
 
-// How long the kill button waits for its second tap.
+// How long the kill and shut down buttons wait for their second tap.
 const SURE_MS = 4000;
+// How long the power button waits for the box to go off or come back.
+const POWER_MS = 120000;
 // Covers fetched at once: the box downscales them one by one.
 const COVERS_AT_ONCE = 4;
 // How long a launch may take before the card stops waiting for it.
@@ -257,7 +265,7 @@ const STYLE = `
   .kill { color: var(--bt-red); box-shadow: 0 0 6px rgba(255, 90, 110, 0.3); }
   /* :hover too: on a phone the tapped button stays hovered, and the plain
      hover background (more specific than .kill.sure) hid the red. */
-  .kill.sure, .kill.sure:hover:not(:disabled) {
+  .kill.sure, .kill.sure:hover:not(:disabled), .power.sure, .power.sure:hover:not(:disabled) {
     background: var(--bt-red); color: var(--bt-bg);
     box-shadow: 0 0 14px rgba(255, 90, 110, 0.9), 0 0 28px rgba(255, 90, 110, 0.45);
   }
@@ -447,7 +455,9 @@ class BatoceraCard extends HTMLElement {
     clearInterval(this._ticker);
     this._ticker = undefined;
     clearTimeout(this._sureTimer);
+    clearTimeout(this._sureOffTimer);
     clearTimeout(this._startTimer);
+    this._powered();
     if (this._observer) this._observer.disconnect();
     this._observer = undefined;
     this._queue = [];
@@ -516,6 +526,7 @@ class BatoceraCard extends HTMLElement {
           <div class="ctl">
             <button class="pause" type="button"></button>
             <button class="kill" type="button"></button>
+            <button class="power" type="button"></button>
           </div>
         </header>
         <div class="banner"><div class="big"></div><div class="note"></div></div>
@@ -565,7 +576,7 @@ class BatoceraCard extends HTMLElement {
       wrap: $(".wrap"), cover: $(".cover"), img: $(".cover img"), title: $(".title"), sub: $(".sub"),
       shot: $(".shot"), shotImg: $(".shot img"), zoom: $(".zoom"), zoomImg: $(".zoom img"),
       clock: $(".clock"), label: $(".clock .label"), left: $(".clock .left"), ctl: $(".ctl"),
-      pause: $(".pause"), kill: $(".kill"), banner: $(".banner"), big: $(".banner .big"),
+      pause: $(".pause"), kill: $(".kill"), power: $(".power"), banner: $(".banner"), big: $(".banner .big"),
       note: $(".banner .note"), back: $(".back"), where: $(".where"), wt: $(".where .wt"), count: $(".where .count"), tabs: $(".tabs"),
       filters: $(".filters"), reset: $(".filters .reset"),
       search: $(".search"), status: $(".status"), statusBig: $(".status .big"),
@@ -577,6 +588,7 @@ class BatoceraCard extends HTMLElement {
     };
     this.$.pause.addEventListener("click", () => this._pause());
     this.$.kill.addEventListener("click", () => this._kill());
+    this.$.power.addEventListener("click", () => this._power());
     this.$.back.addEventListener("click", () => this._back());
     this.$.tabs.addEventListener("click", (e) => {
       const tab = e.target.closest("button");
@@ -1242,6 +1254,38 @@ class BatoceraCard extends HTMLElement {
     this._call("media_stop").catch(() => {});
   }
 
+  // Shut down takes two taps, as kill; power on, one. Either then waits for
+  // the box to go off or come back, or for POWER_MS.
+  _power() {
+    const kind = this._powerKind;
+    if (!kind || this._powering) return;
+    if (kind === "off" && !this._sureOff) {
+      this._sureOff = true;
+      clearTimeout(this._sureOffTimer);
+      this._sureOffTimer = setTimeout(() => {
+        this._sureOff = false;
+        this._update();
+      }, SURE_MS);
+      this._update();
+      return;
+    }
+    this._sureOff = false;
+    clearTimeout(this._sureOffTimer);
+    this._powering = kind;
+    this._powerTimer = setTimeout(() => this._powered(true), POWER_MS);
+    this._update();
+    const entity = this._config.entities[kind === "off" ? "shutdown" : "power_on"];
+    // The frontend shows a refusal itself: the button comes back.
+    Promise.resolve(this._hass.callService("button", "press", { entity_id: entity }))
+      .catch(() => this._powered(true));
+  }
+
+  _powered(render = false) {
+    this._powering = undefined;
+    clearTimeout(this._powerTimer);
+    if (render) this._update();
+  }
+
   _update() {
     const { state, attr } = this._player();
     const playing = state === "playing" || state === "paused";
@@ -1302,9 +1346,22 @@ class BatoceraCard extends HTMLElement {
     this.$.left.textContent = typeof left === "number" ? hm(left) : "";
     this.$.clock.classList.toggle("low", typeof left === "number" && left <= 5);
 
-    // Controls only for those who may use them, and only while a game runs.
+    // Controls only for those who may use them: pause and kill while a game
+    // runs; power while there is a button for it, to shut the box down while
+    // it is on or to wake it while it is off (Home Assistant offers one at a
+    // time, and Power on only once it knows how to wake the box).
     const control = !!this._control && playing;
-    this.$.ctl.classList.toggle("hidden", !control);
+    const usable = (role) => {
+      const button = this._state(role);
+      return !!button && button.state !== "unavailable";
+    };
+    if (this._powering === (online ? "on" : "off")) this._powered();  // done
+    let power = "";
+    if (this._control) power = (online ? usable("shutdown") && "off" : usable("power_on") && "on") || "";
+    this._powerKind = power;
+    this.$.ctl.classList.toggle("hidden", !control && !power);
+    this.$.pause.classList.toggle("hidden", !control);
+    this.$.kill.classList.toggle("hidden", !control);
     const pause = this.$.pause;
     if (state === "paused") {
       pause.textContent = STRINGS.resume;
@@ -1322,6 +1379,14 @@ class BatoceraCard extends HTMLElement {
     if (!control) this._sure = false;
     this.$.kill.textContent = this._sure ? STRINGS.killSure : STRINGS.kill;
     this.$.kill.classList.toggle("sure", !!this._sure);
+    if (power !== "off") this._sureOff = false;
+    const waiting = !!power && this._powering === power;
+    let label = power === "on" ? STRINGS.powerOn : this._sureOff ? STRINGS.shutDownSure : STRINGS.shutDown;
+    if (waiting) label = power === "on" ? STRINGS.waking : STRINGS.goingOff;
+    this.$.power.classList.toggle("hidden", !power);
+    this.$.power.textContent = label;
+    this.$.power.disabled = waiting;
+    this.$.power.classList.toggle("sure", !!this._sureOff);
 
     let big = "";
     let note = "";
