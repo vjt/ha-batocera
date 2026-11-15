@@ -106,6 +106,10 @@ const split = (id) => {
 };
 // "system:snes", "fav:snes", "dir:mame:Fighter" -> the system; "fav" -> "".
 const systemOf = (id) => split(id)[1].split(":")[0];
+// Where filters belong: a system's views and folders to the system, the home
+// to "" (every game); the favourites and recently played of all systems have
+// none (undefined).
+const placeOf = (id) => (id ? systemOf(id) || undefined : "");
 // A cover's URL without the user's token, which changes on its own: what is
 // left (media_image_id) names the picture.
 const coverKey = (url) => {
@@ -114,8 +118,8 @@ const coverKey = (url) => {
   return kept.length ? `${path}?${kept.join("&")}` : path;
 };
 
-// The filters narrow a system's games by what batocera/games tells of them:
-// game id -> {genre, year, rating}.
+// The filters narrow a system's games, or every game at the home, by what
+// batocera/games tells of them: game id -> {genre, year, rating}.
 const FILTERS = ["genre", "decade", "rating"];
 // A game as the filters see it: its genre's family ("Platform" for
 // "Platform / Run & Jump"), its decade ("1990"), its whole stars out of
@@ -300,6 +304,9 @@ const STYLE = `
         letter-spacing: 0; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
         -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .dir .tn { font-size: 10px; line-height: 1.6; color: var(--bt-cyan); }
+  .ts { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; text-transform: none;
+        letter-spacing: 0; font-size: 11px; color: var(--bt-dim); overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; }
   .badge { font-size: 8px; color: var(--bt-pink); animation: blink 1.2s steps(2) infinite; }
   .art {
     position: relative; aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center;
@@ -520,6 +527,10 @@ class BatoceraCard extends HTMLElement {
       this._resetFilters();
       this._refilter();
     });
+    // At the home, a filter's first use asks for every game's facts.
+    for (const type of ["focusin", "pointerdown"]) {
+      this.$.filters.addEventListener(type, () => this._ask(this._filterPlace));
+    }
     this.$.search.addEventListener("input", () => this._onSearch());
     this.$.shot.addEventListener("click", () => {
       this._zoomed = true;
@@ -554,7 +565,8 @@ class BatoceraCard extends HTMLElement {
     });
     this._stack = [{ id: "", title: "" }];
     this._filters = {};  // filter -> the value chosen, "" for any
-    this._filterSystem = "";  // the system they are for
+    this._filterPlace = null;  // where they are for (see placeOf); none yet
+    this._facts = new Map();  // place -> {catalog, games: game id -> facts}
     this._systems = {};  // system name -> its full name, from the root
     this._blobs = new Map();  // cover URL without its token -> blob URL
     this._queue = [];
@@ -638,15 +650,20 @@ class BatoceraCard extends HTMLElement {
 
   _browse() {
     const here = this._here();
-    this._filterFor(systemOf(here.id));
+    this._filterFor(placeOf(here.id));
     const id = (this._browsed = this._browseId());
     const seq = (this._seq = (this._seq || 0) + 1);
+    const catalog = this._player().attr.catalog;
     this._folder = undefined;
     this._failed = false;
     this._dropSearch();
     const query = this.$.search.value.trim();
     if (query && this._searchRemote()) this._search(query);  // a new catalog, or tab
+    // Every game of every system is a big list: kept for its catalog.
+    const every = this._every;
+    if (id === "all" && every && every.catalog === catalog) this._folder = every.folder;
     this._renderGrid();
+    if (this._folder) return;
     Promise.resolve(this._hass.callWS({
       type: "media_player/browse_media", entity_id: this._config.entities.player,
       media_content_id: id, media_content_type: "directory",
@@ -654,7 +671,8 @@ class BatoceraCard extends HTMLElement {
       .then((folder) => {
         if (seq !== this._seq) return;
         this._folder = folder;
-        if (!here.id) {
+        if (id === "all") this._every = { catalog, folder };
+        if (!id) {
           for (const child of folder.children || []) {
             const [kind, system] = split(child.media_content_id);
             if (kind === "system") this._systems[system] = child.title;
@@ -678,46 +696,63 @@ class BatoceraCard extends HTMLElement {
 
   // --- filtering --------------------------------------------------------
 
-  // The filters stay through a system's tabs and folders, and reset when it
-  // is left. Its games' genre, year and rating are asked once per system and
-  // catalog; while a new catalog's are on their way, the old ones serve.
-  _filterFor(system) {
-    if (system !== this._filterSystem) {
-      this._filterSystem = system;
+  // The filters belong to a place: a system, through its tabs and folders,
+  // or the home. Each has its own, reset when it is left. A place's genre,
+  // year and rating by game id are kept per catalog; while a new catalog's
+  // are on their way, the old ones serve. A system's are asked as it is
+  // entered. The home's, every game's, are many: asked when a filter is
+  // first used there, and for a new catalog only while one is set.
+  _filterFor(place) {
+    if (place !== this._filterPlace) {
+      this._filterPlace = place;
       this._resetFilters();
     }
+    if (place || this._filtering()) this._ask(place);
+  }
+
+  _ask(place) {
     const catalog = this._player().attr.catalog;
-    const old = this._facts && this._facts.system === system ? this._facts : undefined;
-    if (!system || !this._config.entry_id || (old && old.catalog === catalog)) return;
-    const facts = (this._facts = { system, catalog, games: old && old.games });
-    Promise.resolve(this._hass.callWS({ type: "batocera/games", entry_id: this._config.entry_id, system }))
+    const old = this._facts.get(place);
+    if (typeof place !== "string" || !this._config.entry_id || (old && old.catalog === catalog)) return;
+    const facts = { catalog, games: old && old.games };
+    this._facts.set(place, facts);
+    const msg = { type: "batocera/games", entry_id: this._config.entry_id };
+    if (place) msg.system = place;
+    Promise.resolve(this._hass.callWS(msg))
       .then((games) => {
-        if (this._facts !== facts) return;
+        if (this._facts.get(place) !== facts) return;
         facts.games = games || {};
+        if (place !== this._filterPlace) return;
         this._renderFilters();
         this._refilter();
       }, () => {
-        if (this._facts !== facts) return;
-        this._facts = undefined;  // no filters, until the next try
+        if (this._facts.get(place) !== facts) return;
+        this._facts.delete(place);  // no filters, until the next try
+        if (place !== this._filterPlace) return;
+        this._resetFilters();
         this._refilter();
       });
   }
 
-  // The facts of the system shown, once they came.
+  // The facts of the place shown, once they came.
   _games() {
-    const facts = this._facts;
-    return facts && facts.system === this._filterSystem ? facts.games : undefined;
+    const facts = this._facts.get(this._filterPlace);
+    return facts && facts.games;
   }
 
   _filtering() {
     return !!this._games() && FILTERS.some((key) => this._filters[key]);
   }
 
-  // What to browse: while a filter is set, a system or folder comes as one
-  // list of its games, sub-folders included (all:<system>[:<folder>]).
+  // What to browse: while a filter is set, the home comes as every game of
+  // every system (all), a system or folder as one list of its games,
+  // sub-folders included (all:<system>[:<folder>]).
   _browseId() {
-    const [kind, rest] = split(this._here().id);
-    return this._filtering() && (kind === "system" || kind === "dir") ? `all:${rest}` : this._here().id;
+    const id = this._here().id;
+    const [kind, rest] = split(id);
+    if (!this._filtering()) return id;
+    if (!id) return "all";
+    return kind === "system" || kind === "dir" ? `all:${rest}` : id;
   }
 
   // The filters changed: browse again when that changes what to browse.
@@ -731,20 +766,22 @@ class BatoceraCard extends HTMLElement {
     this._renderFilters();
   }
 
-  // Each filter offers what the system's games have. A value chosen that
-  // no game has any more goes back to any.
+  // Each filter offers what the place's games have. A value chosen that no
+  // game has any more goes back to any. Until the games' facts come (the
+  // home's: once a filter is used), a filter says they are loading.
   _renderFilters() {
     const games = this._games();
     const offer = offers(games || {});
     const option = (value, label) => Object.assign(el("option", "", label), { value });
+    const loading = () => Object.assign(option("", STRINGS.loading), { disabled: true });
     for (const select of this.$.filters.querySelectorAll("select")) {
       const key = select.dataset.filter;
       const value = offer[key].some(([v]) => v === this._filters[key]) ? this._filters[key] : "";
       if (games) this._filters[key] = value;
       select.replaceChildren(option("", STRINGS.any(STRINGS.filters[key])),
-        ...offer[key].map(([v, label]) => option(v, label)));
+        ...(games ? offer[key].map(([v, label]) => option(v, label)) : [loading()]));
       select.value = value;
-      select.disabled = !offer[key].length;
+      select.disabled = !!games && !offer[key].length;
       showChoice(select);
     }
   }
@@ -856,6 +893,11 @@ class BatoceraCard extends HTMLElement {
       art.classList.add("none");
     }
     tile.append(art, el("span", "tn", item.title));
+    // At the home the games come from every system: each says its own.
+    if (!this._here().id) {
+      const system = systemOf(item.media_content_id);
+      tile.append(el("span", "ts", this._systems[system] || system));
+    }
     if (item.media_content_id === playingId) {
       tile.classList.add("now");
       tile.append(el("span", "badge", STRINGS.nowPlaying));
@@ -945,12 +987,9 @@ class BatoceraCard extends HTMLElement {
     const pressed = kind === "dir" ? "system" : kind;
     for (const tab of this.$.tabs.children) tab.setAttribute("aria-pressed", String(tab.dataset.kind === pressed));
 
-    // The filters, once the system's games are known: on what is listed,
-    // matched by game id.
+    // The filters, on what is listed, matched by game id.
     const games = this._games();
     const filtering = this._filtering();
-    this.$.filters.classList.toggle("hidden", !games);
-    this.$.reset.classList.toggle("hidden", !filtering);
 
     const items = (this._folder && this._folder.children) || [];
     const text = this.$.search.value.trim();
@@ -964,7 +1003,7 @@ class BatoceraCard extends HTMLElement {
     let note = "";
     if (this._failed) [big, note] = [STRINGS.noCatalog, STRINGS.noCatalogNote];
     else if (!this._folder) big = STRINGS.loading;
-    else if (root && !items.some((i) => split(i.media_content_id)[0] === "system")) {
+    else if (!this._browsed && !items.some((i) => split(i.media_content_id)[0] === "system")) {
       [big, note] = [STRINGS.noCatalog, STRINGS.noCatalogNote];
     } else if (remote && !this._found) big = STRINGS.loading;
     else if (!items.length && !remote) big = STRINGS.noGames;
@@ -973,6 +1012,11 @@ class BatoceraCard extends HTMLElement {
     this.$.statusBig.textContent = big;
     this.$.statusNote.textContent = note;
     this.$.status.classList.toggle("hidden", !big);
+    // Shown once the place's games are known; at the home, before, as using
+    // one asks for them.
+    const home = this._filterPlace === "" && !!this._config.entry_id;
+    this.$.filters.classList.toggle("hidden", !(games || home) || big === STRINGS.noCatalog);
+    this.$.reset.classList.toggle("hidden", !filtering);
 
     const playing = this._player().attr.media_content_id;
     this._items = big && big !== STRINGS.noMatch ? [] : shown;
