@@ -1,7 +1,7 @@
 {
   "domain": "batocera",
   "name": "Batocera",
-  "after_dependencies": ["lovelace"],
+  "after_dependencies": ["hassio", "lovelace"],
   "codeowners": ["@vjt"],
   "config_flow": true,
   "dependencies": ["frontend", "http", "mqtt"],
