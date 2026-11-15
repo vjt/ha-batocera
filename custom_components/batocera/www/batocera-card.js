@@ -74,6 +74,7 @@ const STRINGS = {
   played: (n) => (n === 1 ? "Played once" : `Played ${n} times`),
   lastPlayed: (day) => `last ${day}`,
   playTime: (time) => `${time} in all`,
+  sizeUnits: ["B", "kB", "MB", "GB", "TB"],
 };
 
 // How long the kill and shut down buttons wait for their second tap.
@@ -118,6 +119,15 @@ const hm = (minutes) => `${Math.floor(minutes / 60)}:${pad(minutes % 60)}`;
 const duration = (seconds) => {
   const m = Math.max(1, Math.round(seconds / 60));
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${pad(m % 60)}m`;
+};
+// 850 MB, 2.3 GB or 25 GB, for the space a game takes: SI units (1000, as
+// disks are sold), one decimal under 10, none from 10 up.
+const bytes = (n) => {
+  const units = STRINGS.sizeUnits;
+  for (let i = 0, v = n; ; i++, v /= 1000) {
+    const shown = i && v < 9.95 ? v.toFixed(1) : String(Math.round(v));
+    if (Number(shown) < 1000 || i === units.length - 1) return `${shown} ${units[i]}`;
+  }
 };
 // EmulationStation's local time, "20261102T183000", as that day; undefined
 // when it is not one.
@@ -937,9 +947,10 @@ class BatoceraCard extends HTMLElement {
 
   // What the sheet tells of the game: the catalog's facts (batocera/games,
   // for this one game) at once, and what the box adds (batocera/info: the
-  // description, who made it, the time played in all) once Home Assistant
-  // has it. Each is shown when it comes, if the sheet is still this game's;
-  // without them (an old box, a busy one) the sheet shows the rest.
+  // description, who made it, the time played in all, the space it takes)
+  // once Home Assistant has it. Each is shown when it comes, if the sheet is
+  // still this game's; without them (an old box, a busy one) the sheet shows
+  // the rest.
   _about(sheet) {
     const entry = this._config.entry_id;
     if (!entry || !this._hass.callWS) return;
@@ -1018,7 +1029,8 @@ class BatoceraCard extends HTMLElement {
     const info = sheet.info || {};
     const { genre, stars } = traits(facts);
     put(this.$.sfacts, [facts.year > 0 && facts.year, genre && facts.genre,
-      facts.players && STRINGS.players(facts.players), stars && "★".repeat(stars)]);
+      facts.players && STRINGS.players(facts.players), stars && "★".repeat(stars),
+      info.size > 0 && bytes(info.size)]);
     put(this.$.scredits, [...new Set([info.developer, info.publisher])], " / ");
     const last = esDay(facts.lastplayed);
     put(this.$.splayed, [facts.playcount > 0 && STRINGS.played(facts.playcount),
