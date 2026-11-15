@@ -139,7 +139,7 @@ async def managed_entry(hass, fake_box):
     return entry
 
 
-# A catalog as the daemon publishes it (see the README, "The catalog").
+# A catalog as the daemon publishes it (see docs/internals.md, "The catalog").
 SONIC, SOR, BARE, MARIO = "9b1c4e0d2a37", "0d5e7a9b3c21", "1a2b3c4d5e6f", "5f4e3d2c1b0a"
 INDEX = [
     {"name": "megadrive", "fullname": "Sega Mega Drive", "manufacturer": "Sega", "year": 1988,

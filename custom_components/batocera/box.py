@@ -46,7 +46,7 @@ FAVOURITE, HAS_COVER = 1, 2  # row flags, as the daemon sets them
 
 class BoxError(Exception):
     """A request the box refused or did not answer. reason is the daemon's
-    error (see the README, "Requests"), or "timeout"."""
+    error (see docs/internals.md, "Requests"), or "timeout"."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
