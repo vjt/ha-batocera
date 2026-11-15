@@ -79,17 +79,18 @@ def ws_access(
     {
         vol.Required("type"): "batocera/games",
         vol.Required("entry_id"): str,
-        vol.Required("system"): str,
+        vol.Optional("system"): str,
     }
 )
 @callback
 def ws_games(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Genre, year and rating of a system's games, by game id: the page's
-    filters need them, and the media browser does not carry them."""
+    """Genre, year and rating of a system's games, or without a system of
+    every game, by game id: the page's filters need them, and the media
+    browser does not carry them."""
     if box := _ws_box(hass, connection, msg):
-        games = box.system_games(msg["system"])
+        games = box.system_games(msg["system"]) if "system" in msg else box.games.values()
         connection.send_result(
             msg["id"], {g.id: {"genre": g.genre, "year": g.year, "rating": g.rating} for g in games}
         )

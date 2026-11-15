@@ -9,9 +9,10 @@ Content ids:
     "dir:<s>:<folder>"    a sub-folder of a system ("Fighter", "Extra/Demos";
                           everything after the second colon, colons included)
     "game:<s>:<id>"       one game: playable, never expanded
-    "all:<s>", "all:<s>:<folder>"  a system's games, or a folder's, sub-folders
-                          included, as one list: the page's filters show it,
-                          the tree never links to it
+    "all", "all:<s>", "all:<s>:<folder>"  every game of every system by name, a
+                          system's games, or a folder's, sub-folders included,
+                          as one list: the page's filters show it, the tree
+                          never links to it
 """
 
 from __future__ import annotations
@@ -166,6 +167,9 @@ def browse(box: Box, content_id: str | None, image_url: Callable[[str], str]) ->
         title = "Recently played" + (f" · {names[system]}" if system else "")
         shown = sorted((g for g in games if g.lastplayed), key=lambda g: g.lastplayed, reverse=True)
         shown = shown[:RECENT]
+    elif content_id == "all":
+        title = box.name
+        shown = sorted(games, key=lambda g: g.name.casefold())
     elif kind == "all" and system:
         shown = [g for g in games if _under(g, folder)]
         if folder and not shown:
