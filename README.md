@@ -58,10 +58,14 @@ much it was played, its description), PRESS START, and it starts on the TV.
   <img src="docs/page-recent.jpg" width="300" alt="The Batocera page on a phone: the 50 recently played games, the one playing now marked; one title blurred">
 </p>
 
-### Stop, pause, limits
+### Stop, pause, power, limits
 
 - **Stop and pause**: stop quits the game the way the exit hotkey does, so
   saves are written; pause is offered when the emulator has a pause hotkey.
+- **Shut down**: the box goes off the way EmulationStation's own menu does
+  it, so the gamelists are saved, after quitting the game as stop does.
+- **Power on**: Wake-on-LAN, with no MAC address to type in: the box tells
+  Home Assistant how to wake it while it is on.
 - **Limits**: a daily playtime cap, a time window in which games are allowed,
   a manual lock, and a warning five minutes before the end. Batocera has no
   user profiles, so limits apply to the whole box.
