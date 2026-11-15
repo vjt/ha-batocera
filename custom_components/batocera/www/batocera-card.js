@@ -80,9 +80,12 @@ const el = (tag, cls, text) => {
   if (text !== undefined) node.textContent = text;
   return node;
 };
-// A filter's choice, on the label under its see-through select.
+// A filter's choice, on the label under its see-through select; none chosen,
+// its name ("ANY GENRE" does not fit three to a row on a phone).
 const showChoice = (select) => {
-  select.previousElementSibling.textContent = select.selectedOptions[0]?.textContent ?? "";
+  select.previousElementSibling.textContent =
+    select.value ? select.selectedOptions[0].textContent : STRINGS.filters[select.dataset.filter];
+  select.parentElement.classList.toggle("on", Boolean(select.value));  // lit, as a pressed tab
 };
 const pad = (n) => String(n).padStart(2, "0");
 // 1:02:03 or 2:03, for the time played.
@@ -277,6 +280,7 @@ const STYLE = `
     font-size: 16px; color-scheme: dark;
   }
   .pick:hover:not(:has(select:disabled)) { background: rgba(62, 244, 255, 0.1); }
+  .pick.on, .pick.on:hover { background: var(--bt-cyan); color: var(--bt-bg); }
   .pick:has(select:disabled) { opacity: 0.45; box-shadow: none; }
   .pick select:disabled { cursor: default; }
   .status { text-align: center; padding: 32px 8px; }

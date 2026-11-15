@@ -502,10 +502,11 @@ test("filters: what the system's games have, combined", async () => {
   assert.deepEqual(t.options("genre"), ["ANY GENRE", "Beat'em up", "Platform"]);  // families; no "None"
   assert.deepEqual(t.options("decade"), ["ANY DECADE", "1990s", "2000s"]);
   assert.deepEqual(t.options("rating"), ["ANY RATING", "★★★★", "★★★", "★★", "★"]);
-  assert.deepEqual(t.labels(), ["ANY GENRE", "ANY DECADE", "ANY RATING"]);
+  assert.deepEqual(t.labels(), ["GENRE", "DECADE", "RATING"]);
   await t.filter("genre", "Platform");
   assert.deepEqual(t.tiles(), ["Pokémon Crystal", "Sonic the Hedgehog"]);
-  assert.deepEqual(t.labels(), ["Platform", "ANY DECADE", "ANY RATING"]);  // the choice, shown
+  assert.deepEqual(t.labels(), ["Platform", "DECADE", "RATING"]);  // the choice, shown
+  assert.deepEqual(t.$$(".pick.on").map((p) => p.querySelector("select").dataset.filter), ["genre"]);
   assert.ok(t.shown(".filters .reset"));
   await t.filter("decade", "1990");
   assert.deepEqual(t.tiles(), ["Sonic the Hedgehog"]);
@@ -518,7 +519,7 @@ test("filters: what the system's games have, combined", async () => {
   await flush();
   assert.deepEqual(t.tiles(), ["Bare", "Pokémon Crystal", "Sonic the Hedgehog", "Streets of Rage"]);
   assert.deepEqual(["genre", "decade", "rating"].map((k) => t.select(k).value), ["", "", ""]);
-  assert.deepEqual(t.labels(), ["ANY GENRE", "ANY DECADE", "ANY RATING"]);
+  assert.deepEqual(t.labels(), ["GENRE", "DECADE", "RATING"]);
   assert.ok(!t.shown(".filters .reset") && !t.shown(".status"));
   await t.filter("rating", "3");
   assert.deepEqual(t.tiles(), ["Sonic the Hedgehog", "Streets of Rage"]);  // unrated: any only
