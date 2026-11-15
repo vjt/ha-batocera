@@ -552,6 +552,65 @@ class CatalogTest(TempDirTest):
         self.assertEqual(details["developer"], "d" * 253 + "…")
         self.assertEqual(hb.cut("abcdef", 5), "ab…")
 
+    def described(self, kid=False):
+        """The synthetic catalog, with more descriptions to search."""
+        games = json.loads(json.dumps(SYNTHETIC["games"]))
+        games["megadrive"][2]["desc"] = "A hidden snowboard game."
+        games["megadrive"][4]["desc"] = "Sketch Turner is drawn\ninto his comic. Faster than Sonic."
+        games["snes"][0]["desc"] = "Mario rides Yoshi. By Nintendo."
+        games["snes"].append({"id": "b1", "path": "/userdata/roms/snes/Avalanche.sfc",
+                              "name": "1080° Avalanche", "kidgame": "true",
+                              "desc": "Race down the mountain on a snowboard.\nBy Nintendo."})
+        return self.build(kid=kid, games=games)
+
+    def test_fold(self):
+        # As Home Assistant's name search folds (browse.fold).
+        self.assertEqual(hb.fold("Pokémon CRYSTAL"), "pokemon crystal")
+        self.assertEqual(hb.fold("Straße ﬁre"), "strasse fire")
+        self.assertEqual(hb.fold_words("  Down the\nmountain,\t\tfast "), "down the mountain, fast")
+
+    def test_descriptions_stay_on_the_box(self):
+        catalog = self.described()
+        texts = catalog["megadrive"].texts
+        # Folded as a search compares them, with the name, kept with the catalog.
+        self.assertEqual(texts[hb.game_id("/userdata/roms/megadrive/Sonic.zip")],
+                         ("sonic the hedgehog", "sonic runs fast. dr. robotnik waits."))
+        self.assertNotIn(hb.game_id("/userdata/roms/megadrive/Bare.zip"), texts)  # none
+        self.assertNotIn(hb.game_id("/userdata/roms/megadrive/Hidden.zip"), texts)
+        # Never published.
+        self.assertNotIn(b"obotnik", catalog["megadrive"].data)
+        self.assertNotIn(b"nowboard", catalog["snes"].data)
+
+    def test_search_descriptions(self):
+        catalog = self.described()
+        comix = hb.game_id("/userdata/roms/megadrive/Comix Zone.zip")
+        mario = hb.game_id("/userdata/roms/snes/Mario World.sfc")
+        avalanche = hb.game_id("/userdata/roms/snes/Avalanche.sfc")
+        search = hb.search_descriptions
+        self.assertEqual(search(catalog, "snowboard"), [avalanche])  # not the hidden game
+        self.assertEqual(search(catalog, " SNÖWBOARD "), [avalanche])  # case and accents aside
+        self.assertEqual(search(catalog, "drawn  into"), [comix])  # across a line break
+        # By name, of every system or of one.
+        self.assertEqual(search(catalog, "nintendo"), [avalanche, mario])
+        self.assertEqual(search(catalog, "nintendo", "snes"), [avalanche, mario])
+        self.assertEqual(search(catalog, "nintendo", "megadrive"), [])
+        self.assertEqual(search(catalog, "nintendo", "nes"), [])
+        # What the name search finds is not found again: Sonic's own description.
+        self.assertEqual(search(catalog, "sonic"), [comix])
+        # Fewer than three characters are in nearly every description.
+        for short in ("by", "  b  ", "", "é"):
+            self.assertEqual(search(catalog, short), [], short)
+        # In Kid mode, kid games only.
+        self.assertEqual(search(self.described(kid=True), "nintendo"), [avalanche])
+
+    def test_search_descriptions_finds_at_most_200(self):
+        games = {"snes": [{"path": f"/userdata/roms/snes/{n:03}.sfc", "name": f"Game {n:03}",
+                           "desc": "The same old story."} for n in range(250)]}
+        found = hb.search_descriptions(self.build(games=games), "old story")
+        self.assertEqual(len(found), hb.SEARCH_MAX)
+        self.assertEqual(found[0], hb.game_id("/userdata/roms/snes/000.sfc"))
+        self.assertEqual(found[-1], hb.game_id("/userdata/roms/snes/199.sfc"))
+
     def test_es_settings(self):
         path = self.tmp / "es_settings.cfg"
         path.write_text('<?xml version="1.0"?>\n<config>\n'
@@ -1011,6 +1070,22 @@ class RequestTest(unittest.TestCase):
         self.fake.close()
         with self.assertLogs(hb.log, "WARNING"):
             self.assertEqual(self.answer(op="info", game=self.SONIC)["error"], "es_unreachable")
+
+    def test_search(self):
+        asked = len(self.fake.requests)
+        self.assertEqual(self.answer(op="search", query="Robotnik"),
+                         {"id": "0123abcd", "ok": True, "games": [self.SONIC]})
+        self.assertEqual(self.answer(op="search", query="robotnik", system="megadrive")["games"],
+                         [self.SONIC])
+        self.assertEqual(self.answer(op="search", query="robotnik", system="snes")["games"], [])
+        self.assertEqual(self.answer(op="search", query="sonic")["games"], [])  # in its name
+        self.assertEqual(self.answer(op="search", query="ro")["games"], [])  # too short
+        # From what the catalog kept: EmulationStation is not asked.
+        self.assertEqual(len(self.fake.requests), asked)
+
+    def test_search_errors(self):
+        for req in ({}, {"query": 3}, {"query": None}, {"query": "sonic", "system": ["snes"]}):
+            self.assertEqual(self.answer(op="search", **req)["error"], "bad_request", req)
 
     def start_line(self, rom="/userdata/roms/megadrive/Sonic.zip"):
         return "\t".join(["gameStart", str(os.getpid()), "megadrive", "libretro",
