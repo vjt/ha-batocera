@@ -63,6 +63,9 @@ const FOLDERS = {
   "system:snes": folder("system:snes", "Super Nintendo", [MARIO]),
   fav: folder("fav", "Favourites", [SONIC]),
   recent: folder("recent", "Recently played", [MARIO, SOR, SONIC]),
+  // What the filters list: a system or folder, sub-folders included.
+  "all:megadrive": folder("all:megadrive", "Sega Mega Drive", [BARE, POKEMON, SONIC, SOR]),
+  "all:snes": folder("all:snes", "Super Nintendo", [MARIO]),
 };
 const browseMedia = (folders = FOLDERS) => (msg) =>
   folders[msg.media_content_id] ? Promise.resolve(structuredClone(folders[msg.media_content_id]))
@@ -417,6 +420,8 @@ const MAME = {
   "system:mame": folder("system:mame", "MAME", [folder("dir:mame:Fighter", "Fighter"), GALAXIAN]),
   "dir:mame:Fighter": folder("dir:mame:Fighter", "Fighter", [KI]),
   "fav:mame": folder("fav:mame", "Favourites · MAME", [KI]),
+  "all:mame": folder("all:mame", "MAME", [GALAXIAN, KI]),
+  "all:mame:Fighter": folder("all:mame:Fighter", "Fighter", [KI]),
 };
 
 test("inside a system, search covers its sub-folders", async () => {
@@ -527,13 +532,14 @@ test("filters: only the choices there are", async () => {
   assert.equal(u.tiles().length, 4);
 });
 
-test("filters stay through tabs, folders and search, and reset when the system is left", async () => {
+test("filters stay through tabs and search, and reset when the system is left", async () => {
   const t = await filtered();
   await t.open("Sega Mega Drive");
   await flush();
   await t.filter("decade", "1990");
-  await t.search("s");  // the system's search, filtered by game id
+  await t.search("s");  // by name, among what the filters list
   assert.deepEqual(t.tiles(), ["Sonic the Hedgehog", "Streets of Rage"]);
+  assert.deepEqual(t.asked("media_player/search_media"), []);
   await t.type("");
   t.$('.tabs [data-kind="fav"]').click();
   await flush();
@@ -553,16 +559,34 @@ test("filters stay through tabs, folders and search, and reset when the system i
   assert.equal(t.tiles().length, 4);
   assert.equal(t.asked("batocera/games").length, 1);  // same catalog: asked once
 
-  const m = await filtered({ folders: MAME });
-  await m.open("MAME");
+});
+
+test("filters list a system or folder with its sub-folders, without folder tiles", async () => {
+  const t = await filtered({ folders: MAME });
+  await t.open("MAME");
   await flush();
-  await m.filter("genre", "Fighting");
-  assert.deepEqual(m.tiles(), ["Fighter"]);  // folders stay; Galaxian goes
-  assert.equal(m.text(".status .note"), "THE FILTERS LEAVE NO GAME");
-  await m.open("Fighter");
+  assert.deepEqual(t.tiles(), ["Fighter", "Galaxian"]);
+  await t.filter("genre", "Fighting");
+  assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "all:mame");
+  assert.deepEqual(t.tiles(), ["Killer Instinct"]);  // from the Fighter folder
+  assert.equal(t.text(".where"), "MAME");
+  const asked = t.asked("media_player/browse_media").length;
+  await t.filter("decade", "1990");  // the same list: not asked again
+  assert.equal(t.asked("media_player/browse_media").length, asked);
+  assert.deepEqual(t.tiles(), ["Killer Instinct"]);
+  t.$(".filters .reset").click();
   await flush();
-  assert.deepEqual(m.tiles(), ["Killer Instinct"]);
-  assert.equal(m.select("genre").value, "Fighting");
+  assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "system:mame");
+  assert.deepEqual(t.tiles(), ["Fighter", "Galaxian"]);  // the folders again
+  await t.open("Fighter");
+  await t.filter("rating", "4");
+  assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "all:mame:Fighter");
+  assert.deepEqual(t.tiles(), ["Killer Instinct"]);
+  assert.equal(t.text(".where"), "Fighter");
+  t.$('.tabs [data-kind="fav"]').click();  // favourites are flat already
+  await flush();
+  assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "fav:mame");
+  assert.equal(t.select("rating").value, "4");
 });
 
 test("filters: a new catalog is asked again, and a value gone goes back to any", async () => {
