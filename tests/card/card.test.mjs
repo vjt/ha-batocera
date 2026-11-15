@@ -159,9 +159,12 @@ async function mount(states = idleStates(), { control = true, ws = {}, folders =
     select(key).dispatchEvent(new window.Event("change", { bubbles: true }));
     await flush();
   };
+  // What each filter shows: the select is see-through, over a label.
+  const labels = () => ["genre", "decade", "rating"].map((key) =>
+    select(key).closest(".pick").querySelector("span").textContent);
   return {
     window, card, root, $, $$, calls, wsCalls, fetched, sent, asked, set, text, shown, tiles, open, type, search,
-    services, select, options, filter,
+    services, select, options, filter, labels,
   };
 }
 
@@ -499,8 +502,10 @@ test("filters: what the system's games have, combined", async () => {
   assert.deepEqual(t.options("genre"), ["ANY GENRE", "Beat'em up", "Platform"]);  // families; no "None"
   assert.deepEqual(t.options("decade"), ["ANY DECADE", "1990s", "2000s"]);
   assert.deepEqual(t.options("rating"), ["ANY RATING", "★★★★", "★★★", "★★", "★"]);
+  assert.deepEqual(t.labels(), ["ANY GENRE", "ANY DECADE", "ANY RATING"]);
   await t.filter("genre", "Platform");
   assert.deepEqual(t.tiles(), ["Pokémon Crystal", "Sonic the Hedgehog"]);
+  assert.deepEqual(t.labels(), ["Platform", "ANY DECADE", "ANY RATING"]);  // the choice, shown
   assert.ok(t.shown(".filters .reset"));
   await t.filter("decade", "1990");
   assert.deepEqual(t.tiles(), ["Sonic the Hedgehog"]);
@@ -513,6 +518,7 @@ test("filters: what the system's games have, combined", async () => {
   await flush();
   assert.deepEqual(t.tiles(), ["Bare", "Pokémon Crystal", "Sonic the Hedgehog", "Streets of Rage"]);
   assert.deepEqual(["genre", "decade", "rating"].map((k) => t.select(k).value), ["", "", ""]);
+  assert.deepEqual(t.labels(), ["ANY GENRE", "ANY DECADE", "ANY RATING"]);
   assert.ok(!t.shown(".filters .reset") && !t.shown(".status"));
   await t.filter("rating", "3");
   assert.deepEqual(t.tiles(), ["Sonic the Hedgehog", "Streets of Rage"]);  // unrated: any only
