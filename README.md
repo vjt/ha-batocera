@@ -40,8 +40,9 @@ they found.
 
 ### PRESS START
 
-Tap a game to see what it is (year, genre, players, rating, who made it, how
-much it was played, its description), PRESS START, and it starts on the TV.
+Tap a game to see what it is (year, genre, players, rating, the space it
+takes on the box, who made it, how much it was played, its description),
+PRESS START, and it starts on the TV.
 
 <p>
   <img src="docs/page-launch.jpg" width="300" alt="The Batocera page on a phone: Metal Sonic Rebooted about to start, with its year, genre, players, rating, authors and description, quitting the game playing now">
