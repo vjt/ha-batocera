@@ -452,6 +452,87 @@ def test_search_everywhere():
     assert many[0].title == "Game 000" and many[-1].title == "Game 199"
 
 
+async def search_media(client, query, content_id=None):
+    msg = {"type": "media_player/search_media", "entity_id": "media_player.arcade",
+           "search_query": query}
+    if content_id:
+        msg |= {"media_content_type": "directory", "media_content_id": content_id}
+    await client.send_json_auto_id(msg)
+    reply = await client.receive_json()
+    assert reply["success"], reply
+    return reply["result"]
+
+
+def titles(items):
+    return [item["title"] for item in items]
+
+
+async def test_search_descriptions(hass, mqtt_mock, setup, daemon, hass_ws_client):
+    await publish_catalog(hass)
+    fire(hass, "availability", "online")
+    await hass.async_block_till_done()
+    client = await hass_ws_client(hass)
+    # The box answers ids. What the name search finds, what the catalog does
+    # not have and garbage are left out; the rest, apart, by name.
+    daemon.answers["search"] = {"ok": True, "games": [MARIO, SONIC, "0" * 12, 3, SOR, MARIO]}
+    found = await search_media(client, " The ")
+    assert titles(found["result"]) == ["Sonic the Hedgehog"]
+    assert titles(found["in_description"]) == ["Streets of Rage", "Super Mario World"]
+    sor = found["in_description"][0]
+    assert sor["media_content_id"] == f"game:megadrive:{SOR}" and sor["can_play"]
+    assert sor["thumbnail"]  # its cover, as any game's
+    [req] = daemon.requests
+    assert (req["op"], req["query"], "system" in req) == ("search", "The", False)
+
+    # A system or one of its folders: the box is told which, its games only.
+    found = await search_media(client, "the", "system:snes")
+    assert (titles(found["result"]), titles(found["in_description"])) == (
+        [], ["Super Mario World"])
+    assert daemon.requests[-1]["system"] == "snes"
+    found = await search_media(client, "the", "dir:megadrive:Platform")
+    assert titles(found["in_description"]) == ["Streets of Rage"]
+    assert daemon.requests[-1]["system"] == "megadrive"
+
+    # Under three characters, too long, or the box offline: not asked.
+    asked = len(daemon.requests)
+    for query in ("ab", " a  ", "x" * 101):
+        assert (await search_media(client, query))["in_description"] == []
+    fire(hass, "availability", "offline")
+    await hass.async_block_till_done()
+    found = await search_media(client, "the")
+    assert titles(found["result"]) == ["Sonic the Hedgehog"] and found["in_description"] == []
+    assert len(daemon.requests) == asked
+
+
+async def test_search_with_an_old_or_slow_box(
+    hass, mqtt_mock, setup, daemon, hass_ws_client, freezer
+):
+    from custom_components.batocera.browse import DESC_TIMEOUT, async_search_descriptions
+
+    await publish_catalog(hass)
+    fire(hass, "availability", "online")
+    await hass.async_block_till_done()
+    client = await hass_ws_client(hass)
+    # A daemon without the search op, or a garbled answer: the names only.
+    for answer in ({"ok": False, "error": "bad_request"}, {"ok": True, "games": "nope"},
+                   {"ok": True}):
+        daemon.answers["search"] = answer
+        found = await search_media(client, "the")
+        assert titles(found["result"]) == ["Sonic the Hedgehog"], answer
+        assert found["in_description"] == [], answer
+    assert len(daemon.requests) == 3
+
+    # One too busy to answer in time: the names wait no longer.
+    daemon.answers["search"] = None
+    box = setup.runtime_data
+    task = hass.async_create_task(async_search_descriptions(box, "the", lambda cid: cid))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    freezer.tick(DESC_TIMEOUT + 1)  # time is frozen in these tests
+    assert await task == []
+    assert len(daemon.requests) == 4
+
+
 async def test_system_logo_image(hass, mqtt_mock, setup, hass_ws_client, hass_client):
     await publish_catalog(hass)
     fire(hass, "catalog/logo/snes", SVG)

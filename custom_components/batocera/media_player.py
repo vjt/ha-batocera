@@ -11,7 +11,6 @@ from homeassistant.components.media_player import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
     MediaType,
-    SearchMedia,
     SearchMediaQuery,
 )
 from homeassistant.core import HomeAssistant
@@ -20,7 +19,14 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import BatoceraConfigEntry
 from .box import BoxError, logo_type, logos_id
-from .browse import browse, parse_game, search, search_scope
+from .browse import (
+    GameSearch,
+    async_search_descriptions,
+    browse,
+    parse_game,
+    search,
+    search_scope,
+)
 from .const import DOMAIN
 from .entity import LiveEntity
 
@@ -119,10 +125,17 @@ class BatoceraMediaPlayer(LiveEntity, MediaPlayerEntity):
     ) -> BrowseMedia:
         return browse(self.box, media_content_id, self._image_url)
 
-    async def async_search_media(self, query: SearchMediaQuery) -> SearchMedia:
-        """Games by name, of the system the search starts from, or of all."""
+    async def async_search_media(self, query: SearchMediaQuery) -> GameSearch:
+        """Games by name, of the system the search starts from, or of all;
+        apart, those found by their description alone."""
         system = search_scope(query.media_content_id)
-        return SearchMedia(result=search(self.box, query.search_query, self._image_url, system))
+        text = query.search_query
+        return GameSearch(
+            result=search(self.box, text, self._image_url, system),
+            in_description=await async_search_descriptions(
+                self.box, text, self._image_url, system
+            ),
+        )
 
     def _image_url(self, content_id: str) -> str:
         # A logo's URL changes with the logo, so no cache keeps the old one.

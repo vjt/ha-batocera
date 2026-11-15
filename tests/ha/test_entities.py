@@ -163,7 +163,7 @@ async def test_screen(hass, mqtt_mock, setup, hass_client, freezer):
     assert hass.states.get("image.arcade_screen").state == STATE_UNKNOWN
 
 
-async def test_search_feature(hass, mqtt_mock, setup, hass_ws_client):
+async def test_search_feature(hass, mqtt_mock, setup, daemon, hass_ws_client):
     from homeassistant.components.media_player import MediaPlayerEntityFeature
 
     from conftest import publish_catalog
@@ -171,6 +171,8 @@ async def test_search_feature(hass, mqtt_mock, setup, hass_ws_client):
     fire(hass, "availability", "online")
     fire(hass, "state", "idle")
     await publish_catalog(hass)
+    # A daemon that cannot search the descriptions: the names, as ever.
+    daemon.answers["search"] = {"ok": False, "error": "bad_request"}
     features = hass.states.get("media_player.arcade").attributes["supported_features"]
     assert features & MediaPlayerEntityFeature.SEARCH_MEDIA
     client = await hass_ws_client(hass)
@@ -181,6 +183,7 @@ async def test_search_feature(hass, mqtt_mock, setup, hass_ws_client):
                                         "search_query": query, **scope})
         msg = await client.receive_json()
         assert msg["success"], msg
+        assert msg["result"]["in_description"] == []
         return [c["title"] for c in msg["result"]["result"]]
 
     assert await search("s") == ["Sonic the Hedgehog", "Streets of Rage", "Super Mario World"]
