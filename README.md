@@ -474,14 +474,14 @@ daemon's belief, not a measurement.
 - **Gamelists in other places.** Only the `gamelist.xml` next to the ROMs, or
   in a folder above them up to `/userdata/roms`, is read. Without one, the
   game name is the ROM file name and there is no cover.
-- **Not checked on a box yet.** The catalog, launch and pause were written from
-  EmulationStation's and Batocera's sources and tested against made-up
-  answers: the shape of the web API's answers, the path it gives for a game
-  (the catalog's ids hash it, and must match the hook's ROM path), the media
-  keys, how long a launch takes after a game was quit, the name and value of
-  the Kid mode setting, and where and how `hotkeygen` keeps the running
-  emulator's hotkeys (newer Batocera releases may move them to D-Bus, and
-  pause would then show as not known).
+- **Checked on one box.** The catalog, covers, search, launch, stop and the
+  screen are checked on one x86_64 box with Batocera 43. Other releases may
+  answer differently: the shape of the web API's answers, the path it gives
+  for a game (the catalog's ids hash it, and must match the hook's ROM path),
+  the media keys, and where and how `hotkeygen` keeps the running emulator's
+  hotkeys (newer Batocera releases may move them to D-Bus, and pause would
+  then show as not known). Pause and the Kid mode setting are not checked on
+  the box yet.
 - **Pause has no feedback.** The pause hotkey toggles and nothing reports
   back: if the game is paused or resumed from the pad, `paused` is wrong until
   the game ends. Play time keeps counting while paused.
