@@ -182,7 +182,7 @@ All under `batocera/<device>/` (the prefix is set by `topic_prefix` and
 | `started_at` | yes | box | ISO 8601 UTC timestamp of the game start, empty when idle |
 | `cover` | yes | box | raw JPEG bytes (at most 512 px a side, 500 KB), empty when there is none |
 | `screen` | yes | box | raw JPEG bytes, 640 px wide (at most 500 KB): what the TV shows; empty when there is no screenshot or the box shut down |
-| `last_session` | yes | box | JSON: `game`, `system`, `emulator`, `started_at`, `ended_at`, `seconds` |
+| `last_session` | yes | box | JSON: `game`, `game_id` (its id in the catalog; daemons before 0.10 leave it out), `system`, `emulator`, `started_at`, `ended_at`, `seconds` |
 | `version` | yes | box | the daemon's version |
 | `game_id` | yes | box | the running game's id in the catalog, empty when idle |
 | `pausable` | yes | box | `ON` / `OFF`: whether the running emulator has a pause hotkey; empty when idle or not known |
@@ -239,12 +239,14 @@ EmulationStation is in Kid mode, only the games marked as kid games.
 then. `catalog/system/<name>` holds, gzip-compressed, one row per game:
 
 ```json
-[["9b1c4e0d2a37", "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000", "Platform", 0.75],
- ["0d5e7a9b3c21", "Streets of Rage", 1991, "Beat'em up", "1-2", 0, 0, "", "", null]]
+[["9b1c4e0d2a37", "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000", "Platform", 0.75, 4321],
+ ["0d5e7a9b3c21", "Streets of Rage", 1991, "Beat'em up", "1-2", 0, 0, "", "", null, 0]]
 ```
 
 That is: id, name, year (or `null`), genre, players, flags, play count, last
-played (EmulationStation's local time, or empty), folder, rating. Flags: 1 =
+played (EmulationStation's local time, or empty), folder, rating, time
+played (EmulationStation's `gametime`: seconds played in all, 0 when never
+or not a number). Flags: 1 =
 favourite, 2 = has a cover. The folder is where EmulationStation lists the
 game, under its system's ROM folder (`Fighter` for
 `/userdata/roms/mame/Fighter/kinst.zip`, `a/b` when nested), empty at the
@@ -258,7 +260,8 @@ not). A changed folder view shows at the next reading of the catalog. The
 rating is
 EmulationStation's, from 0 to 1, or `null` when the game is unrated (`0`) or
 the rating is not a number; rows of daemons before 0.7 stop at the folder,
-and their games count as unrated. The id is the first 12 hex digits of the
+and their games count as unrated; rows of daemons before 0.10 stop at the
+rating, and their time played is not known. The id is the first 12 hex digits of the
 MD5 of the ROM's path: `game_id` uses the same, so the running game can be
 found in the catalog.
 
