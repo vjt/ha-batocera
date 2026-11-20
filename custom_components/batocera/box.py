@@ -6,6 +6,7 @@ import asyncio
 import base64
 import contextlib
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 import hashlib
 import json
@@ -35,6 +36,7 @@ from .const import (
     DOMAIN,
     EVENT_WARNING,
 )
+from .stats import Session, SessionLog
 from .wake import LIMITED_BROADCAST, ipv4_address, mac_address
 
 _LOGGER = logging.getLogger(__name__)
@@ -99,6 +101,7 @@ class Game(NamedTuple):
     lastplayed: str  # EmulationStation's "20261102T183000", or ""
     folder: str  # under the system's ROM folder: "Fighter", "Extra/Demos", or ""
     rating: float | None = None  # 0 to 1; None when unrated
+    gametime: int | None = None  # seconds played in all; None when the row does not say
 
 
 # What may come before <svg>: blanks, an XML declaration, comments, a DOCTYPE
@@ -207,10 +210,18 @@ def _rating(value: Any) -> float | None:
     return None
 
 
+def _gametime(row: list[Any]) -> int | None:
+    """A row's time played: None when it has no such column, 0 when garbage."""
+    if len(row) <= 10:
+        return None
+    value = row[10]
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
 def _game(system: str, row: Any) -> Game | None:
     """A catalog row: [id, name, year, genre, players, flags, playcount,
-    lastplayed, folder, rating]; rows of daemons before 0.4 have no folder,
-    before 0.7 no rating."""
+    lastplayed, folder, rating, gametime]; rows of daemons before 0.4 have
+    no folder, before 0.7 no rating, before 0.10 no gametime."""
     if not isinstance(row, list) or len(row) < 8:
         return None
     gid, name, year, genre, players, flags, playcount, lastplayed = row[:8]
@@ -229,6 +240,7 @@ def _game(system: str, row: Any) -> Game | None:
         str(lastplayed or ""),
         _folder(row[8]) if len(row) > 8 else "",
         _rating(row[9]) if len(row) > 9 else None,
+        _gametime(row),
     )
 
 
@@ -308,6 +320,7 @@ class Box:
         self._listeners: list[Callable[[], None]] = []
         self._requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._store: Store[dict] = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
+        self.session_log = SessionLog(hass, entry.entry_id)
 
     async def async_setup(self, entry: ConfigEntry) -> None:
         if data := await self._store.async_load():
@@ -322,6 +335,7 @@ class Box:
             elif data.get("counted_start"):
                 self._counted_start = dt_util.parse_datetime(data["counted_start"])
             self.network = dict(data.get("network") or {})  # older stores have none
+        await self.session_log.async_load()
         # The options say how to wake the box, too.
         entry.async_on_unload(entry.add_update_listener(self._options_changed))
         entry.async_on_unload(
@@ -413,8 +427,9 @@ class Box:
             return
         text = payload.decode(errors="replace")
         if leaf == "availability":
-            if text != "online" and self.online and self._session_running():
-                self._count(self.started_at, dt_util.now())  # type: ignore[arg-type]
+            if text != "online" and self.online and (cut := self.running_session()):
+                self._count(cut.start, cut.end)
+                self.session_log.add(replace(cut, cut=True))
             self.online = text == "online"
             self._offline = not self.online
         elif leaf == "state":
@@ -613,8 +628,18 @@ class Box:
             end = dt_util.parse_datetime(session["ended_at"])
         except (ValueError, KeyError, TypeError):
             return
-        if start is None or end is None:
+        if start is None or end is None or end < start:
             return
+        game_id = session.get("game_id")
+        self.session_log.add(
+            Session(
+                start,
+                end,
+                str(session.get("system") or ""),
+                game_id if isinstance(game_id, str) and GAME_ID.match(game_id) else None,
+                str(session.get("game") or ""),
+            )
+        )
         if self._counted_start and start <= self._counted_start:
             start = end  # counted by an earlier version: nothing to add
         self._count(start, end)
@@ -622,6 +647,19 @@ class Box:
     def _session_running(self) -> bool:
         """Whether the running session is counted as it goes."""
         return self.online and not self._cut and self.state == "playing" and bool(self.started_at)
+
+    def running_session(self, now: datetime | None = None) -> Session | None:
+        """The running session as played so far, while it is counted."""
+        if not self._session_running():
+            return None
+        start: datetime = self.started_at  # type: ignore[assignment]
+        return Session(
+            start,
+            max(start, now or dt_util.now()),
+            self.system or "",
+            self.game_id,
+            self.game or "",
+        )
 
     def _count(self, start: datetime, end: datetime) -> None:
         """Count a session as played from start to end, today's part of it
