@@ -270,6 +270,15 @@ restrict it. The installer points out the same, and `es_web_notifier`
 - **Gamelists.** Only the `gamelist.xml` next to the ROMs, or in a folder
   above them, is read. Without one, the name is the file name and there is no
   cover.
+- **Launch waits on an idle box.** With EmulationStation's `PowerSaverMode`
+  set to `enhanced` or `instant`, an idle EmulationStation keeps a `/launch`
+  queued until the next pad or keyboard input, or until the screensaver
+  starts: a game started from Home Assistant may not start for minutes.
+  Seen on Batocera 44. Until
+  [batocera-emulationstation#2305](https://github.com/batocera-linux/batocera-emulationstation/pull/2305)
+  is released, set `PowerSaverMode` to `default` in
+  `/userdata/system/configs/emulationstation/es_settings.cfg`, with
+  EmulationStation stopped.
 - **Checked on one box.** The catalog, covers, search, launch, stop and the
   screen are checked on one x86_64 box with Batocera 43. Pause and Kid mode
   are not checked on the box yet. Other releases may answer differently,
