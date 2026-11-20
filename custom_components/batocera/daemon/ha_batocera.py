@@ -613,7 +613,7 @@ def catalog_system(system, games, kid_mode, folder_view):
                      es_year(game.get("releasedate")), str(game.get("genre") or ""),
                      str(game.get("players") or ""), flags, es_int(game.get("playcount")),
                      str(game.get("lastplayed") or ""), folder,
-                     es_rating(game.get("rating"))]
+                     es_rating(game.get("rating")), max(0, es_int(game.get("gametime")))]
         roms[gid] = Rom(name, os.path.normpath(path), str(game.get("id", "")), media)
         # Kept for search_descriptions, never published: too much for the catalog.
         if desc := fold_words(str(game.get("desc") or "")):
@@ -1440,6 +1440,7 @@ class Daemon:
         # stops counting the running one when it sees the same started_at.
         self.pub("last_session", json.dumps({
             "game": g["name"],
+            "game_id": g["id"],
             "system": g["system"],
             "emulator": g["emulator"],
             "started_at": iso(g["started"]),

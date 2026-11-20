@@ -483,11 +483,13 @@ class CatalogTest(TempDirTest):
         sonic = hb.game_id("/userdata/roms/megadrive/Sonic.zip")
         sor = hb.game_id("/userdata/roms/megadrive/Streets of Rage.zip")
         self.assertEqual(rows, [  # by name; the hidden game is left out
-            [hb.game_id("/userdata/roms/megadrive/Bare.zip"), "Bare", None, "", "", 0, 0, "", "", None],
+            [hb.game_id("/userdata/roms/megadrive/Bare.zip"), "Bare", None, "", "", 0, 0, "", "", None,
+             0],
             [hb.game_id("/userdata/roms/megadrive/Comix Zone.zip"), "Comix Zone", None, "", "", 0, 0, "", "",
-             None],  # its rating is garbage
-            [sonic, "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000", "", 0.75],
-            [sor, "Streets of Rage", 1991, "Beat'em up", "1-2", 2, 0, "", "", None],  # unrated
+             None, 0],  # its rating is garbage
+            [sonic, "Sonic the Hedgehog", 1991, "Platform", "1", 3, 12, "20261102T183000", "", 0.75,
+             4321],  # seconds played in all
+            [sor, "Streets of Rage", 1991, "Beat'em up", "1-2", 2, 0, "", "", None, 0],  # unrated
         ])
 
     def test_es_rating(self):
@@ -1745,7 +1747,8 @@ class DaemonTest(TempDirTest):
                           "batocera/test/cover", "batocera/test/pausable",
                           "batocera/test/paused"])
         self.assertEqual(json.loads(published[0][1]), {
-            "game": "Bare", "system": "megadrive", "emulator": "libretro/genesisplusgx",
+            "game": "Bare", "game_id": hb.game_id(self.rom), "system": "megadrive",
+            "emulator": "libretro/genesisplusgx",
             "started_at": "2023-11-14T22:13:20+00:00", "ended_at": "2023-11-14T22:15:25+00:00",
             "seconds": 125})
         self.assertIsNone(self.d.game)
