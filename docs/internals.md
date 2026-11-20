@@ -355,6 +355,60 @@ While the box shuts down, a launch or another shutdown answers
 a game that starts anyway is quit. A daemon from before shutdowns answers
 `bad_request`, and Home Assistant says it must be updated.
 
+## Play statistics
+
+The page's high scores come from Home Assistant, through the
+`batocera/stats` websocket command (`entry_id`).
+
+Today, this month (the calendar month, in Home Assistant's time zone) and
+the last 30 days come from the sessions Home Assistant keeps, in its own
+store (`batocera.<entry_id>.sessions`, removed with the box): each
+`last_session` the box sends, by start and end, system, game id and name,
+and the game the box was playing when it went away (a power cut, the
+network), ended then and marked cut. Sessions never overlap on a box: one
+that overlaps a kept session replaces it, so a `last_session` seen again
+is kept once, and the full session replaces its cut. Sessions are kept for
+400 days. The log starts with the version that keeps it: there is nothing
+before. All time comes from EmulationStation's own counts in the catalog
+(time played and play count), which hold the history from before
+ha-batocera; it is not live, EmulationStation counts a game when it ends.
+
+```json
+{"date": "2026-11-20", "log_since": "2026-11-02",
+ "names": {"snes": "Super Nintendo", "switch": "Nintendo Switch"},
+ "days": [{"date": "2026-10-22", "seconds": {"snes": 2040}}, "..."],
+ "today": {"seconds": 5700,
+           "games": [{"id": "9b1c4e0d2a37", "name": "Super Mario Bros. Wonder", "system": "switch",
+                      "seconds": 5700, "count": 1, "playing": true}],
+           "systems": [{"system": "switch", "seconds": 5700, "games": 1,
+                        "top": "Super Mario Bros. Wonder"}]},
+ "month": {"...": "as today"},
+ "all": {"seconds": 1324800, "played": 312, "owned": 11579,
+         "games": [{"id": "5f4e3d2c1b0a", "name": "Street Fighter II' Turbo", "system": "snes",
+                    "seconds": 220800, "count": 212}],
+         "systems": [{"system": "snes", "seconds": 655200, "games": 64, "owned": 812,
+                      "top": "Street Fighter II' Turbo"}]}}
+```
+
+- `date` is Home Assistant's local date; `log_since` the local date of the
+  oldest session kept or of the running game, `null` when there is neither.
+- `names`: the full name, from the catalog index, of every system named in
+  the answer; the short name for a system the catalog does not list.
+- `days`: the last 30 local days, oldest first, seconds per system;
+  sessions are split at local midnight.
+- `today` and `month` include the running game up to now, marked
+  `playing`, while the box is online. `games` are ranked by seconds, then
+  by name: 10 for today, 30 for the month; `id` is `null` for sessions of
+  daemons before 0.10, which do not send it; `count` is how many sessions
+  of the game touch the range. `systems` lists every system with time in
+  the range, with how many games were played and the one played most.
+- `all` is `null` while the catalog does not say the time played (a daemon
+  before 0.10). Otherwise: the time played over the catalog, how many games
+  have a play count (`played`) of how many (`owned`), the 30 games played
+  longest with their play count, and per system with time played: the time,
+  games played, games owned and the one played longest.
+- All seconds are whole.
+
 ## Development
 
 Daemon tests, standard library only, need `ffmpeg` and `ffprobe` for the cover
