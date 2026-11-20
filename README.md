@@ -49,6 +49,15 @@ PRESS START, and it starts on the TV.
   <img src="docs/page-launch.jpg" width="300" alt="The Batocera page on a phone: Metal Sonic Rebooted about to start, with its year, genre, players, rating, authors and description, quitting the game playing now">
 </p>
 
+### High scores
+
+The HIGH SCORES tile at the home, after the favourites and recently played:
+the time played today, this month and in all, the last 30 days as bars
+stacked by console, then the most played games and the consoles of today,
+of the month or of all time. Today and the month come from the sessions
+Home Assistant logs, from this version on; all time is EmulationStation's
+own count, with the years before.
+
 ### What is playing, and the TV
 
 - **What is playing**: game, system, emulator, cover, since when, and the
