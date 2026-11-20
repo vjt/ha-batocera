@@ -288,7 +288,18 @@ class Box:
         # Playtime of the sessions that ended today.
         self.day = dt_util.now().date()
         self.played = 0.0
-        self.counted_start: datetime | None = None  # of the last session counted
+        # Everything played before it is in self.played. Sessions never
+        # overlap: a session seen again, or reported again by a restarted
+        # daemon, counts only what lies after it.
+        self.counted_until: datetime | None = None
+        # A store from before counted_until kept the start of the last
+        # session counted instead: sessions up to that one are counted.
+        self._counted_start: datetime | None = None
+        # The box went away while it played (a power cut, the network): the
+        # session was counted up to then, and is not counted on until the
+        # daemon says it plays, once back.
+        self._offline = False  # "offline" said; not just not known yet
+        self._cut = False
 
         self.lock_reason: str | None = None
         self._lock_sent: bool | None = None
@@ -306,8 +317,10 @@ class Box:
             self.manual_lock = data["manual_lock"]
             self.day = date.fromisoformat(data["day"])
             self.played = data["played"]
-            if data["counted_start"]:
-                self.counted_start = dt_util.parse_datetime(data["counted_start"])
+            if data.get("counted_until"):
+                self.counted_until = dt_util.parse_datetime(data["counted_until"])
+            elif data.get("counted_start"):
+                self._counted_start = dt_util.parse_datetime(data["counted_start"])
             self.network = dict(data.get("network") or {})  # older stores have none
         # The options say how to wake the box, too.
         entry.async_on_unload(entry.add_update_listener(self._options_changed))
@@ -400,9 +413,14 @@ class Box:
             return
         text = payload.decode(errors="replace")
         if leaf == "availability":
+            if text != "online" and self.online and self._session_running():
+                self._count(self.started_at, dt_util.now())  # type: ignore[arg-type]
             self.online = text == "online"
+            self._offline = not self.online
         elif leaf == "state":
             self.state = text or None
+            if self.online:  # the daemon says it again, once back
+                self._cut = False
         elif leaf in ("game", "system", "emulator", "version"):
             setattr(self, leaf, text or None)
         elif leaf == "game_id":
@@ -427,6 +445,10 @@ class Box:
             return
         else:
             return
+        if self._offline and self.state == "playing":
+            # Retained, whatever their order: a game the box is not there
+            # to play, or no longer.
+            self._cut = True
         self._update()
 
     @callback
@@ -593,13 +615,23 @@ class Box:
             return
         if start is None or end is None:
             return
-        if self.counted_start and start <= self.counted_start:
-            return  # already counted, e.g. retained and seen again on restart
-        self.counted_start = start
+        if self._counted_start and start <= self._counted_start:
+            start = end  # counted by an earlier version: nothing to add
+        self._count(start, end)
+
+    def _session_running(self) -> bool:
+        """Whether the running session is counted as it goes."""
+        return self.online and not self._cut and self.state == "playing" and bool(self.started_at)
+
+    def _count(self, start: datetime, end: datetime) -> None:
+        """Count a session as played from start to end, today's part of it
+        that lies after counted_until."""
         self._roll_day()
-        midnight = dt_util.start_of_local_day()
-        if end > midnight:
-            self.played += (end - max(start, midnight)).total_seconds()
+        since = max(start, self.counted_until or start, dt_util.start_of_local_day())
+        if end > since:
+            self.played += (end - since).total_seconds()
+        if self.counted_until is None or end > self.counted_until:
+            self.counted_until = end
         self._save()
 
     def _roll_day(self) -> None:
@@ -612,9 +644,10 @@ class Box:
         now = dt_util.now()
         total = self.played if self.day == now.date() else 0.0
         # The daemon sends last_session just before "idle": from then on the
-        # running session is counted in self.played.
-        if self.state == "playing" and self.started_at and self.started_at != self.counted_start:
-            since = max(self.started_at, dt_util.start_of_local_day(now))
+        # running session is counted in self.played, up to counted_until.
+        if self._session_running():
+            start: datetime = self.started_at  # type: ignore[assignment]
+            since = max(start, self.counted_until or start, dt_util.start_of_local_day(now))
             total += max(0.0, (now - since).total_seconds())
         return total
 
@@ -710,6 +743,6 @@ class Box:
             "manual_lock": self.manual_lock,
             "day": self.day.isoformat(),
             "played": self.played,
-            "counted_start": self.counted_start.isoformat() if self.counted_start else None,
+            "counted_until": self.counted_until.isoformat() if self.counted_until else None,
             "network": self.network,
         }

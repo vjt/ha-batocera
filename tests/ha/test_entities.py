@@ -228,6 +228,87 @@ async def test_playtime_counts_each_session_once(hass, mqtt_mock, setup, freezer
     assert playtime(hass) == 0
 
 
+async def back_idle(hass):
+    """The box back after a power cut: the daemon says "online", then "idle"
+    and clears the details, with no last_session for the game it lost."""
+    fire(hass, "availability", "online")
+    await hass.async_block_till_done()
+    minutes = playtime(hass)  # before "idle": no phantom minutes in between
+    fire(hass, "state", "idle")
+    for leaf in ("game", "system", "emulator", "started_at"):
+        fire(hass, leaf, "")
+    await hass.async_block_till_done()
+    return minutes
+
+
+async def test_power_cut_mid_game_counts_until_the_box_went_away(
+    hass, mqtt_mock, setup, freezer, hass_storage
+):
+    await play(hass, minutes_ago=30)
+    gone = dt_util.now()
+    fire(hass, "availability", "offline")  # the broker's will: the box is gone
+    await hass.async_block_till_done()
+    assert playtime(hass) == 30
+    await advance(hass, freezer, hours=2)
+    assert playtime(hass) == 30  # the retained state still says "playing"
+    data = hass_storage[f"batocera.{setup.entry_id}"]["data"]
+    assert data["played"] == 1800
+    assert dt_util.parse_datetime(data["counted_until"]) == gone
+    assert await back_idle(hass) == 30
+    assert playtime(hass) == 30
+
+
+async def test_session_goes_on_when_the_box_is_back(hass, mqtt_mock, setup, freezer):
+    # The network dropped, the game did not: the daemon says it again.
+    started = await play(hass, minutes_ago=30)
+    fire(hass, "availability", "offline")
+    await advance(hass, freezer, minutes=5)
+    assert playtime(hass) == 30
+    await play(hass, minutes_ago=35)
+    assert playtime(hass) == 35  # the time away was played too
+    await advance(hass, freezer, minutes=10)
+    assert playtime(hass) == 45
+    await end(hass, started)
+    assert playtime(hass) == 45
+
+
+async def test_game_adopted_after_a_daemon_crash_is_not_counted_twice(
+    hass, mqtt_mock, setup, freezer
+):
+    # The daemon restarts mid-game and reports the game again, from the
+    # launcher's start: a second or so from the hook's.
+    await play(hass, minutes_ago=30)
+    fire(hass, "availability", "offline")
+    await advance(hass, freezer, minutes=1)
+    adopted = dt_util.now() - timedelta(minutes=31) + timedelta(seconds=1)
+    # adopt(): the details and "playing", before "online"; then all again.
+    for leaf, payload in (
+        ("started_at", adopted.isoformat()),
+        ("state", "playing"),
+        ("availability", "online"),
+        ("started_at", adopted.isoformat()),
+        ("state", "playing"),
+    ):
+        fire(hass, leaf, payload)
+    await hass.async_block_till_done()
+    assert playtime(hass) == 31
+    await advance(hass, freezer, minutes=4)
+    await end(hass, adopted)
+    assert playtime(hass) == 35
+
+
+async def test_box_found_off_mid_game_adds_nothing(hass, mqtt_mock, setup):
+    # Home Assistant starts while the box is off after a power cut: what is
+    # retained says "playing" since hours, and "offline", in any order.
+    fire(hass, "started_at", (dt_util.now() - timedelta(hours=3)).isoformat())
+    fire(hass, "state", "playing")
+    fire(hass, "availability", "offline")
+    await hass.async_block_till_done()
+    assert playtime(hass) == 0
+    assert await back_idle(hass) == 0
+    assert playtime(hass) == 0
+
+
 async def test_session_across_midnight_counts_today_only(hass, mqtt_mock, setup):
     midnight = dt_util.start_of_local_day()
     minutes = lambda m: midnight + timedelta(minutes=m)  # noqa: E731
@@ -338,6 +419,12 @@ async def test_settings_and_playtime_survive_restart(hass, mqtt_mock, entry, has
     await hass.async_block_till_done()
     assert hass.states.get("number.arcade_daily_limit").state == "90"
     assert hass.states.get("time.arcade_allowed_until").state == "21:30:00"
+    assert playtime(hass) == 25
+    # A store of before kept the start of the last session counted, not its
+    # end: that session, retained and seen again, is not counted twice.
+    counted = dt_util.parse_datetime("2026-03-02T08:00:00-08:00")
+    fire(hass, "last_session", session(counted, counted + timedelta(minutes=25)))
+    await hass.async_block_till_done()
     assert playtime(hass) == 25
 
     await call(hass, "number", "set_value", "number.arcade_daily_limit", value=60)

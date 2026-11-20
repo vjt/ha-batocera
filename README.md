@@ -182,6 +182,9 @@ Assistant decides, the box obeys:
 
 - Playtime is counted from the sessions the box reports, and survives
   restarts. A session across midnight counts for the new day from midnight.
+  A box that goes away mid-game (a power cut, the network) counts until
+  then; if the game was still running when the box is back, the time away
+  counts too.
 - Five minutes before the limit or the end of the window, the integration
   fires a `batocera_warning` event (`entry_id`, `name`, `reason`,
   `minutes_left`), once per game session.
