@@ -408,7 +408,7 @@ test("the top: favourites, recent, then the systems", async () => {
   assert.equal(t.text(".where .wt"), "Arcade");
   assert.ok(!t.shown(".back"));
   assert.ok(!t.shown(".tabs"));
-  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "HIGH SCORES", "Sega Mega Drive", "Super Nintendo"]);
   assert.ok(t.$(".grid .tile.fav") && t.$(".grid .tile.recent"));
 });
 
@@ -441,7 +441,7 @@ test("a system: its games, its tabs, back to the top", async () => {
   assert.deepEqual(t.tiles(), ["Streets of Rage", "Sonic the Hedgehog"]);
   t.$(".back").click();
   await flush();
-  assert.equal(t.tiles().length, 4);
+  assert.equal(t.tiles().length, 5);
   assert.equal(t.text(".where .wt"), "Arcade");
 });
 
@@ -475,7 +475,7 @@ test("search from the top finds games of every system", async () => {
   assert.equal(t.text(".ssystem"), "Super Nintendo");
   t.$(".cancel").click();
   await t.type("");  // cleared: the systems again, at once
-  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "HIGH SCORES", "Sega Mega Drive", "Super Nintendo"]);
   await wait(SEARCH_WAIT);
   assert.equal(t.asked("media_player/search_media").length, 2);
 });
@@ -494,7 +494,7 @@ test("only the latest search shows", async () => {
   await flush();
   assert.deepEqual(t.tiles(), ["Super Mario World"]);
   await t.type("");
-  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "HIGH SCORES", "Sega Mega Drive", "Super Nintendo"]);
 });
 
 // The search's answer with, apart, what the box found in the descriptions:
@@ -741,7 +741,7 @@ test("home filters: every game, asked on first use, one flat list", async () => 
   assert.deepEqual(t.options("genre"), ["ANY GENRE", "Beat'em up", "Fighting", "Platform", "Shoot'em Up"]);
   assert.deepEqual(t.options("decade"), ["ANY DECADE", "1970s", "1990s", "2000s"]);
   assert.deepEqual(t.options("rating"), ["ANY RATING", "★★★★", "★★★", "★★", "★"]);
-  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo", "MAME"]);
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "HIGH SCORES", "Sega Mega Drive", "Super Nintendo", "MAME"]);
   await t.filter("decade", "1990");
   assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "all");
   assert.deepEqual(t.tiles(), ["Killer Instinct", "Sonic the Hedgehog", "Streets of Rage", "Super Mario World"]);
@@ -757,7 +757,7 @@ test("home filters: every game, asked on first use, one flat list", async () => 
   t.$(".filters .reset").click();
   await flush();
   assert.equal(t.asked("media_player/browse_media").at(-1).media_content_id, "");
-  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo", "MAME"]);
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "HIGH SCORES", "Sega Mega Drive", "Super Nintendo", "MAME"]);
   assert.deepEqual(t.labels(), ["GENRE", "DECADE", "RATING"]);
   assert.ok(!t.shown(".filters .reset") && !t.shown(".status"));
   // Used again, same catalog: neither the facts nor the list are asked again.
@@ -790,7 +790,7 @@ test("home filters and search: names matched here, among every game", async () =
   await wait(SEARCH_WAIT);
   assert.equal(t.$(".search").value, "");
   assert.equal(t.asked("media_player/search_media").length, 1);
-  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "HIGH SCORES", "Sega Mega Drive", "Super Nintendo"]);
   assert.ok(!t.shown(".filters .reset"));
 });
 
@@ -803,7 +803,7 @@ test("a search alone shows reset, which clears it", async () => {
   t.$(".filters .reset").click();
   await flush();
   assert.equal(t.$(".search").value, "");
-  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo"]);
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "HIGH SCORES", "Sega Mega Drive", "Super Nintendo"]);
   assert.ok(!t.shown(".filters .reset"));
   await t.open("Sega Mega Drive");
   await flush();
@@ -822,7 +822,7 @@ test("the home and each system have filters of their own", async () => {
   await t.filter("genre", "Platform");
   t.$(".back").click();  // not carried out: the systems, nothing set
   await flush();
-  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "Sega Mega Drive", "Super Nintendo", "MAME"]);
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "HIGH SCORES", "Sega Mega Drive", "Super Nintendo", "MAME"]);
   assert.deepEqual(t.labels(), ["GENRE", "DECADE", "RATING"]);
   assert.ok(!t.shown(".filters .reset"));
   await t.use("genre");
@@ -842,7 +842,7 @@ test("the home and each system have filters of their own", async () => {
   t.$(".back").click();
   await flush();
   assert.equal(t.select("decade").value, "");
-  assert.equal(t.tiles().length, 5);
+  assert.equal(t.tiles().length, 6);
   // The favourites of all systems have none.
   await t.open("Favourites");
   assert.ok(!t.shown(".filters"));
@@ -1019,7 +1019,7 @@ test("a new catalog is read again; a system gone leads back to the top", async (
   await t.set(idleStates({ "media_player.arcade": s("idle", { catalog: "c2" }) }));
   await flush();
   assert.equal(t.text(".where .wt"), "Arcade");
-  assert.equal(t.tiles().length, 4);
+  assert.equal(t.tiles().length, 5);
 });
 
 test("new logos: the folder is read again", async () => {
@@ -1237,6 +1237,230 @@ test("the space a game takes: SI units, one decimal under 10, none from 10 up", 
     await flush();
   }
   assert.deepEqual(shown, ["850 B", "1.5 kB", "850 MB", "1.0 GB", "2.3 GB", "10 GB", "25 GB", "1.2 TB", ""]);
+});
+
+// --- the high scores -------------------------------------------------------
+
+// What batocera/stats answers: 30 days to Friday 20 November 2026, six
+// consoles over them (the sixth among OTHER), the logs since the 2nd.
+const DAY_DATES = Array.from({ length: 30 }, (_, i) => {
+  const d = new Date(2026, 10, 20 - 29 + i);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+});
+const STATS = {
+  date: "2026-11-20",
+  log_since: "2026-11-02",
+  names: {
+    megadrive: "Sega Mega Drive", snes: "Super Nintendo", mame: "Arcade", n64: "Nintendo 64",
+    psx: "PlayStation", gb: "Game Boy",
+  },
+  days: DAY_DATES.map((date, i) => ({
+    date,
+    seconds: i === 29 ? { megadrive: 3000, snes: 2400 }
+      : i % 2 ? {} : { megadrive: 3600, snes: 3000, mame: 2400, n64: 1800, psx: 1200, gb: 600 },
+  })),
+  today: {
+    seconds: 5400,
+    games: [
+      { id: "9b1c4e0d2a37", name: "Sonic the Hedgehog", system: "megadrive", seconds: 3000, count: 1, playing: true },
+      { id: "5f4e3d2c1b0a", name: "Super Mario World", system: "snes", seconds: 2400, count: 3 },
+    ],
+    systems: [
+      { system: "megadrive", seconds: 3000, games: 1, top: "Sonic the Hedgehog" },
+      { system: "snes", seconds: 2400, games: 1, top: "Super Mario World" },
+    ],
+  },
+  month: {
+    seconds: 39000,
+    games: [
+      { id: "5f4e3d2c1b0a", name: "Super Mario World", system: "snes", seconds: 21600, count: 9 },
+      { id: null, name: "Tetris", system: "gb", seconds: 14400, count: 1 },
+      { id: "9b1c4e0d2a37", name: "Sonic the Hedgehog", system: "megadrive", seconds: 3000, count: 1, playing: true },
+    ],
+    systems: [
+      { system: "snes", seconds: 21600, games: 1, top: "Super Mario World" },
+      { system: "gb", seconds: 14400, games: 1, top: "Tetris" },
+      { system: "megadrive", seconds: 3000, games: 1, top: "Sonic the Hedgehog" },
+    ],
+  },
+  all: {
+    seconds: 360000, played: 3, owned: 5,
+    games: [
+      { id: "5f4e3d2c1b0a", name: "Super Mario World", system: "snes", seconds: 220800, count: 212 },
+      { id: "9b1c4e0d2a37", name: "Sonic the Hedgehog", system: "megadrive", seconds: 139200, count: 1 },
+    ],
+    systems: [
+      { system: "snes", seconds: 220800, games: 1, owned: 1, top: "Super Mario World" },
+      { system: "megadrive", seconds: 139200, games: 2, owned: 4, top: "Sonic the Hedgehog" },
+    ],
+  },
+};
+const statsOf = (answer = STATS) => () => Promise.resolve(structuredClone(answer));
+const scored = (answer, over = {}) => mount(playingStates(), { ws: { "batocera/stats": statsOf(answer) }, ...over });
+// The board as it reads: rank, name, console, time and count, row by row.
+const board = (t) => t.$$(".board .row").map((row) =>
+  [".rank", ".rn", ".rs", ".rt"].map((q) => row.querySelector(q).textContent).join(" | "));
+const consoles = (t) => t.$$(".board .con").map((c) =>
+  [".cname", ".ctime", ".cmeta"].map((q) => c.querySelector(q).textContent).join(" | "));
+const kpis = (t) => t.$$(".kpi").map((k) => [".k", ".v", ".n"].map((q) => k.querySelector(q).textContent).join(" | "));
+const range = async (t, key) => {
+  t.$(`.board [data-range="${key}"]`).click();
+  await flush();
+};
+
+test("high scores: a tile at the home, after the favourites and recently played", async () => {
+  const t = await filtered();
+  assert.deepEqual(t.tiles().slice(0, 3), ["Favourites", "Recently played", "HIGH SCORES"]);
+  assert.ok(t.$(".grid .tile.scores .minibars"));
+  await t.use("genre");
+  await t.filter("decade", "1990");  // a home filter: every game, no tile
+  assert.ok(!t.tiles().includes("HIGH SCORES"));
+  t.$(".filters .reset").click();
+  await flush();
+  assert.ok(t.tiles().includes("HIGH SCORES"));
+  await t.search("s");  // nor while a search lists games
+  assert.ok(!t.tiles().includes("HIGH SCORES"));
+  await t.type("");
+  await t.open("Sega Mega Drive");  // nor in a system
+  assert.ok(!t.tiles().includes("HIGH SCORES"));
+});
+
+test("high scores: the totals, the 30 days by console, today's board and consoles", async () => {
+  const t = await scored();
+  await t.open("HIGH SCORES");
+  assert.deepEqual(t.asked("batocera/stats"), [{ type: "batocera/stats", entry_id: "e1" }]);
+  assert.equal(t.text(".where .wt"), "HIGH SCORES");
+  assert.equal(t.text(".where .count"), "TIME PLAYED");
+  assert.ok(t.shown(".back") && !t.shown(".tabs") && !t.shown(".search") && !t.shown(".filters"));
+  assert.deepEqual(t.tiles(), []);
+  assert.equal(t.text(".snote"), "");
+  assert.deepEqual(kpis(t), [
+    "TODAY | 1h 30m | 2 consoles · 2 games",
+    "NOVEMBER | 10h 50m | since Nov 2",
+    "ALL TIME | 100H | as EmulationStation counts it",
+    "GAMES PLAYED | 3 | of 5 in the catalog",
+  ]);
+  // The five consoles with most time get a colour each; the sixth is OTHER.
+  const cols = t.$$(".chart .col");
+  assert.equal(cols.length, 30);
+  assert.ok(cols[29].classList.contains("today") && !cols[28].classList.contains("today"));
+  assert.deepEqual(t.$$(".legend > span").map((n) => n.textContent),
+    ["Sega Mega Drive", "Super Nintendo", "Arcade", "Nintendo 64", "PlayStation", "OTHER"]);
+  const colours = (col) => [...col.querySelectorAll(".seg")].map((n) => n.style.background);
+  assert.deepEqual(colours(cols[0]), ["rgb(17, 158, 172)", "rgb(216, 102, 76)", "rgb(106, 125, 240)",
+    "rgb(173, 138, 18)", "rgb(207, 63, 179)", "rgb(74, 70, 112)"]);
+  assert.ok(cols[0].querySelector(".seg:last-child").classList.contains("top"));
+  assert.equal(colours(cols[1]).length, 0);  // nothing played that day
+  assert.equal(cols[29].getAttribute("aria-label"), "FRI, NOV 20: 1h 30m");
+  assert.equal(t.$$(".tbl tr").length, 31);  // the days, newest first, under a heading
+  assert.equal(t.$$(".tbl tr")[1].firstChild.textContent, "FRI, NOV 20");
+  assert.equal(t.text(".board .h2"), "TODAY · TOP 10");
+  assert.equal(t.$('.board [data-range="today"]').getAttribute("aria-pressed"), "true");
+  assert.deepEqual(t.$$(".board .tabs button").map((b) => b.textContent), ["TODAY", "NOVEMBER", "ALL TIME"]);
+  assert.deepEqual(board(t), [
+    "1ST | Sonic the Hedgehog▶ NOW | Sega Mega Drive | 50m1 session",
+    "2ND | Super Mario World | Super Nintendo | 40m3 sessions",
+  ]);
+  assert.deepEqual(consoles(t), [
+    "Sega Mega Drive | 50m | 1 gametop: Sonic the Hedgehog",
+    "Super Nintendo | 40m | 1 gametop: Super Mario World",
+  ]);
+});
+
+test("high scores: a tap on a day tells its consoles, until a second tap", async () => {
+  const t = await scored();
+  await t.open("HIGH SCORES");
+  assert.ok(t.$(".chart .tip").hidden);
+  const col = t.$$(".chart .col")[29];
+  col.click();
+  const tip = t.$(".chart .tip");
+  assert.ok(!tip.hidden && col.classList.contains("on"));
+  assert.deepEqual([...tip.children].map((n) => n.textContent),
+    ["FRI, NOV 20", "Sega Mega Drive50m", "Super Nintendo40m", "TOTAL1h 30m"]);
+  col.click();
+  assert.ok(tip.hidden && !col.classList.contains("on"));
+});
+
+test("high scores: the month and all time, each with its board and consoles", async () => {
+  const t = await scored();
+  await t.open("HIGH SCORES");
+  await range(t, "month");
+  assert.equal(t.text(".board .h2"), "NOVEMBER · TOP 30");
+  assert.equal(t.$('.board [data-range="month"]').getAttribute("aria-pressed"), "true");
+  assert.equal(t.$('.board [data-range="today"]').getAttribute("aria-pressed"), "false");
+  assert.deepEqual(board(t), [
+    "1ST | Super Mario World | Super Nintendo | 6h 00m9 sessions",
+    "2ND | Tetris | Game Boy | 4h 00m1 session",  // not in the stack: OTHER's colour
+    "3RD | Sonic the Hedgehog | Sega Mega Drive | 50m1 session",  // ▶ NOW is today's only
+  ]);
+  assert.equal(t.$$(".board .row .sw")[1].style.background, "rgb(74, 70, 112)");
+  await range(t, "all");
+  assert.equal(t.text(".board .h2"), "ALL TIME · TOP 30");
+  assert.deepEqual(board(t), [
+    "1ST | Super Mario World | Super Nintendo | 61h 20m212 plays",
+    "2ND | Sonic the Hedgehog | Sega Mega Drive | 38h 40m1 play",
+  ]);
+  assert.deepEqual(consoles(t), [
+    "Super Nintendo | 61H | 1 of 1 games playedtop: Super Mario World",
+    "Sega Mega Drive | 39H | 2 of 4 games playedtop: Sonic the Hedgehog",
+  ]);
+  // The range picked stays when the view is drawn again.
+  await t.set(playingStates({ catalog: "c2" }));
+  await flush();
+  assert.equal(t.text(".board .h2"), "ALL TIME · TOP 30");
+});
+
+test("high scores: a box before all time says to update it", async () => {
+  const t = await scored({ ...STATS, all: null });
+  await t.open("HIGH SCORES");
+  assert.deepEqual(kpis(t).slice(2), ["ALL TIME | — | update the box to know", "GAMES PLAYED | — | "]);
+  await range(t, "all");
+  assert.equal(t.text(".board .snone"), "ALL TIME NEEDS THE BOX UPDATED");
+  assert.deepEqual(board(t), []);
+  assert.deepEqual(consoles(t), []);
+});
+
+test("high scores: an empty log says it starts now", async () => {
+  const empty = { seconds: 0, games: [], systems: [] };
+  const t = await scored({
+    ...STATS, log_since: null, days: DAY_DATES.map((date) => ({ date, seconds: {} })), today: empty, month: empty,
+  });
+  await t.open("HIGH SCORES");
+  assert.equal(t.text(".snote"), "THE LOG STARTS NOW: TODAY AND THIS MONTH COUNT FROM HERE ON");
+  assert.deepEqual(kpis(t).slice(0, 2), ["TODAY | 0m | ", "NOVEMBER | 0m | from now on"]);
+  assert.equal(t.$$(".chart .seg").length, 0);
+  assert.deepEqual(t.$$(".legend > span"), []);
+  assert.equal(t.text(".board .snone"), "NOTHING PLAYED YET");
+  assert.deepEqual(consoles(t), []);
+});
+
+test("high scores: the month since the 1st when the log is older", async () => {
+  const t = await scored({ ...STATS, log_since: "2026-10-01" });
+  await t.open("HIGH SCORES");
+  assert.equal(kpis(t)[1], "NOVEMBER | 10h 50m | since the 1st");
+});
+
+test("high scores: no answer says so; back leads home", async () => {
+  const t = await mount(idleStates(), { ws: { "batocera/stats": () => Promise.reject(new Error("unknown command")) } });
+  await t.open("HIGH SCORES");
+  assert.equal(t.text(".status .big"), "NO SCORES");
+  assert.equal(t.text(".status .note"), "HOME ASSISTANT DID NOT ANSWER");
+  assert.ok(!t.shown(".stats"));
+  t.$(".back").click();
+  await flush();
+  assert.deepEqual(t.tiles(), ["Favourites", "Recently played", "HIGH SCORES", "Sega Mega Drive", "Super Nintendo"]);
+  assert.ok(t.shown(".search") && !t.shown(".stats"));
+});
+
+test("high scores: asked anew on each visit, each starting at today", async () => {
+  const t = await scored();
+  await t.open("HIGH SCORES");
+  await range(t, "all");
+  t.$(".back").click();
+  await flush();
+  await t.open("HIGH SCORES");
+  assert.equal(t.asked("batocera/stats").length, 2);
+  assert.equal(t.text(".board .h2"), "TODAY · TOP 10");
 });
 
 // --- the look --------------------------------------------------------------
