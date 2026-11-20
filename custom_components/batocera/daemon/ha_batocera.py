@@ -329,6 +329,17 @@ def es_settings(path=ES_SETTINGS):
     return dict(re.findall(r'<\w+\s+name="([^"]*)"\s+value="([^"]*)"', text))
 
 
+def es_folder_view(settings, system):
+    """How EmulationStation shows a system's folders, as its
+    SystemData::getFolderViewMode tells: the system's own FolderViewMode,
+    unless unset or "auto", else the global one ("never" when unset);
+    windows_installers always shows them."""
+    if system == "windows_installers":
+        return "always"
+    view = settings.get(f"{system}.FolderViewMode", "")
+    return settings.get("FolderViewMode", "never") if view in ("", "auto") else view
+
+
 # --- the catalog ------------------------------------------------------------
 #
 # What EmulationStation's /systems and /systems/<name>/games answer is read
@@ -531,6 +542,31 @@ def rom_folder(path, roms=ROMS):
     return "/".join(parts[len(top) + 1:-1])
 
 
+def shown_folders(folders, view):
+    """Where EmulationStation lists the games whose ROMs sit in folders (as
+    rom_folder gives them, one per game), by the folder view es_folder_view
+    gives: "never", every game at the top; "having multiple games", a
+    folder holding a single game, sub-folders included, shows that game in
+    its place; anything else, as "always", each game in its own folder."""
+    if view == "never":
+        return [""] * len(folders)
+    if view != "having multiple games":
+        return list(folders)
+    paths = [folder.split("/") if folder else [] for folder in folders]
+    games = {}  # folder -> how many games it holds, sub-folders included
+    for parts in paths:
+        for depth in range(1, len(parts) + 1):
+            under = "/".join(parts[:depth])
+            games[under] = games.get(under, 0) + 1
+    shown = []
+    for parts in paths:
+        depth = 0
+        while depth < len(parts) and games["/".join(parts[:depth + 1])] > 1:
+            depth += 1
+        shown.append("/".join(parts[:depth]))
+    return shown
+
+
 # What may come before <svg>: blanks, an XML declaration, comments, a DOCTYPE
 # (with its own entities, as Illustrator writes it). Skipped one piece at a
 # time: one pattern repeating them all backtracks for ages on what is no SVG.
@@ -555,14 +591,18 @@ def image_type(data):
     return None
 
 
-def catalog_system(system, games, kid_mode):
-    """One system's catalog, or None when no game of it is shown."""
+def catalog_system(system, games, kid_mode, folder_view):
+    """One system's catalog, or None when no game of it is shown. Each
+    game's folder is the one EmulationStation lists it in, by folder_view:
+    it counts a folder's games before Kid mode leaves some out."""
     name = system["name"]
     rows, roms, texts = {}, {}, {}
-    for game in games:
-        path = game.get("path")
-        if not isinstance(path, str) or not path or truthy(game.get("hidden")):
-            continue
+    games = [game for game in games
+             if isinstance(game.get("path"), str) and game["path"]
+             and not truthy(game.get("hidden"))]
+    folders = shown_folders([rom_folder(game["path"]) for game in games], folder_view)
+    for game, folder in zip(games, folders):
+        path = game["path"]
         if kid_mode and not truthy(game.get("kidgame")):
             continue
         gid = game_id(path)
@@ -572,7 +612,7 @@ def catalog_system(system, games, kid_mode):
         rows[gid] = [gid, title,
                      es_year(game.get("releasedate")), str(game.get("genre") or ""),
                      str(game.get("players") or ""), flags, es_int(game.get("playcount")),
-                     str(game.get("lastplayed") or ""), rom_folder(path),
+                     str(game.get("lastplayed") or ""), folder,
                      es_rating(game.get("rating"))]
         roms[gid] = Rom(name, os.path.normpath(path), str(game.get("id", "")), media)
         # Kept for search_descriptions, never published: too much for the catalog.
@@ -603,13 +643,17 @@ def catalog_systems(systems):
             and not truthy(s.get("collection"))]
 
 
-def build_catalog(systems, games, kid_mode=False):
+def build_catalog(systems, games, settings=None):
     """name -> SystemCatalog, from /systems and {name: /games} (systems
-    whose games are missing are left out). In Kid mode, kid games only."""
+    whose games are missing are left out), as EmulationStation's settings
+    have it: in Kid mode, kid games only; folders as each system shows them."""
+    settings = settings or {}
+    kid_mode = settings.get("UIMode") == "Kid"
     catalog = {}
     for system in catalog_systems(systems):
         if system["name"] in games:
-            found = catalog_system(system, games[system["name"]], kid_mode)
+            found = catalog_system(system, games[system["name"]], kid_mode,
+                                   es_folder_view(settings, system["name"]))
             if found:
                 catalog[system["name"]] = found
     return catalog
@@ -1240,7 +1284,6 @@ class Daemon:
         and publish what changed. Returns whether EmulationStation answered."""
         settings = self.settings()
         self.publish_public_web(settings)
-        kid_mode = settings.get("UIMode") == "Kid"
         if not self.catalog_read:
             only = None  # one system alone would make an index of one
         try:
@@ -1258,7 +1301,7 @@ class Daemon:
                     games[name] = self.es.games(name)
                 except EsError as err:
                     log.warning("catalog of %s: %s", name, err)
-        fresh = build_catalog(systems, games, kid_mode)
+        fresh = build_catalog(systems, games, settings)
         catalog = {}
         for name in names:  # a system that was not read keeps what it had
             found = fresh.get(name) if name in games else self.catalog.get(name)
