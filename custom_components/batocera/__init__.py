@@ -23,6 +23,7 @@ from .const import CONF_MQTT_LOGIN, CONF_PRIVATE_KEY, DOMAIN
 from .covers import CoverCache
 from .info import InfoCache
 from .live import LiveView
+from .stats import compute as compute_stats
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
@@ -48,6 +49,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     websocket_api.async_register_command(hass, ws_access)
     websocket_api.async_register_command(hass, ws_games)
     websocket_api.async_register_command(hass, ws_info)
+    websocket_api.async_register_command(hass, ws_stats)
     hass.http.register_view(LiveView())
     await async_setup_dashboard(hass)
     return True
@@ -115,6 +117,20 @@ def ws_games(
 
 
 @websocket_api.websocket_command(
+    {vol.Required("type"): "batocera/stats", vol.Required("entry_id"): str}
+)
+@callback
+def ws_stats(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Time played, for the page's high scores: today, this month and the
+    last 30 days from the sessions Home Assistant kept, all time from
+    EmulationStation's counts in the catalog. See stats.compute."""
+    if box := _ws_box(hass, connection, msg):
+        connection.send_result(msg["id"], compute_stats(box))
+
+
+@websocket_api.websocket_command(
     {
         vol.Required("type"): "batocera/info",
         vol.Required("entry_id"): str,
@@ -172,6 +188,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) ->
 
 async def async_remove_entry(hass: HomeAssistant, entry: BatoceraConfigEntry) -> None:
     await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}").async_remove()
+    await Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.sessions").async_remove()
     await hass.async_add_executor_job(CoverCache.remove, _covers_dir(hass, entry))
     ir.async_delete_issue(hass, DOMAIN, _issue_id(entry))
     ir.async_delete_issue(hass, DOMAIN, _public_web_issue_id(entry))
