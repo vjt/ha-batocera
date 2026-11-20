@@ -462,8 +462,9 @@ class LiveTest(unittest.TestCase):
 
 
 class CatalogTest(TempDirTest):
-    def build(self, kid=False, games=None):
-        return hb.build_catalog(SYNTHETIC["systems"], games or SYNTHETIC["games"], kid)
+    def build(self, kid=False, games=None, settings=None):
+        settings = dict(settings or {}, **({"UIMode": "Kid"} if kid else {}))
+        return hb.build_catalog(SYNTHETIC["systems"], games or SYNTHETIC["games"], settings)
 
     def test_only_visible_game_systems(self):
         # Not collections, not the screenshot viewer, not hidden systems, and
@@ -511,9 +512,81 @@ class CatalogTest(TempDirTest):
         games = json.loads(json.dumps(SYNTHETIC["games"]))
         games["megadrive"].append({"path": "/userdata/roms/megadrive/Platform/Sonic 2.zip",
                                    "name": "Sonic 2", "id": "a9"})
-        rows = {r[1]: r for r in json.loads(self.build(games=games)["megadrive"].data)}
+        built = self.build(games=games, settings={"FolderViewMode": "always"})
+        rows = {r[1]: r for r in json.loads(built["megadrive"].data)}
         self.assertEqual(rows["Sonic 2"][8], "Platform")
         self.assertEqual(rows["Bare"][8], "")
+
+    def folders(self, settings, games):
+        """{system: {game name: folder}} of the synthetic catalog plus games."""
+        more = json.loads(json.dumps(SYNTHETIC["games"]))
+        for system, path, name, extra in games:
+            more[system].append({"path": f"/userdata/roms/{system}/{path}", "name": name,
+                                 "id": name, **extra})
+        return {system: {r[1]: r[8] for r in json.loads(entry.data)}
+                for system, entry in self.build(games=more, settings=settings).items()}
+
+    def test_es_folder_view(self):
+        # The system's own FolderViewMode, unless unset or "auto", else the
+        # global one, which EmulationStation defaults to "never".
+        settings = {"FolderViewMode": "always", "ps4.FolderViewMode": "having multiple games",
+                    "snes.FolderViewMode": "auto"}
+        self.assertEqual(hb.es_folder_view(settings, "ps4"), "having multiple games")
+        self.assertEqual(hb.es_folder_view(settings, "snes"), "always")
+        self.assertEqual(hb.es_folder_view(settings, "mame"), "always")
+        self.assertEqual(hb.es_folder_view({"ps4.FolderViewMode": "never"}, "ps4"), "never")
+        self.assertEqual(hb.es_folder_view({}, "mame"), "never")
+        # EmulationStation always shows the folders of this one, whatever is set.
+        self.assertEqual(hb.es_folder_view({"FolderViewMode": "never",
+                                            "windows_installers.FolderViewMode": "never"},
+                                           "windows_installers"), "always")
+
+    def test_shown_folders(self):
+        folders = ["", "Fighter", "Fighter", "Shooter", "Extra/Demos", "Extra/Demos",
+                   "Extra/Tools", "Solo/Deep"]
+        self.assertEqual(hb.shown_folders(folders, "always"), folders)
+        self.assertEqual(hb.shown_folders(folders, "never"), [""] * len(folders))
+        # A folder holding a single game, sub-folders included, shows that
+        # game in its place: Shooter's at the top, Extra/Tools' in Extra,
+        # Solo/Deep's at the top.
+        self.assertEqual(hb.shown_folders(folders, "having multiple games"),
+                         ["", "Fighter", "Fighter", "", "Extra/Demos", "Extra/Demos",
+                          "Extra", ""])
+        # What EmulationStation does not know, it shows as "always".
+        self.assertEqual(hb.shown_folders(folders, "garbage"), folders)
+
+    def test_folders_as_es_shows_them(self):
+        # As on a box showing folders always, but not the PS4's, where each
+        # game sits alone in a folder named by its id: the global setting
+        # for one system, the system's own for the other.
+        settings = {"FolderViewMode": "always", "snes.FolderViewMode": "having multiple games"}
+        folders = self.folders(settings, [
+            ("megadrive", "Platform/Sonic 2.zip", "Sonic 2", {}),
+            ("snes", "CUSA00579/Zelda.sfc", "Zelda", {}),
+        ])
+        self.assertEqual(folders["megadrive"]["Sonic 2"], "Platform")
+        self.assertEqual(folders["snes"]["Zelda"], "")
+
+    def test_folders_never_shown_by_default(self):
+        folders = self.folders({}, [("megadrive", "Platform/Sonic 2.zip", "Sonic 2", {})])
+        self.assertEqual(folders["megadrive"]["Sonic 2"], "")
+
+    def test_hidden_games_do_not_count_in_a_folder(self):
+        folders = self.folders({"FolderViewMode": "having multiple games"}, [
+            ("megadrive", "Sonic/Sonic 2.zip", "Sonic 2", {}),
+            ("megadrive", "Sonic/Sonic CD.zip", "Sonic CD", {"hidden": "true"}),
+        ])
+        self.assertEqual(folders["megadrive"]["Sonic 2"], "")
+
+    def test_kid_mode_counts_every_game_in_a_folder(self):
+        # EmulationStation counts a folder's games before Kid mode leaves
+        # some out: a kid game and another make a folder of the kid game.
+        folders = self.folders({"UIMode": "Kid", "FolderViewMode": "having multiple games"}, [
+            ("megadrive", "Sonic/Sonic 2.zip", "Sonic 2", {"kidgame": "true"}),
+            ("megadrive", "Sonic/Sonic 3.zip", "Sonic 3", {}),
+        ])
+        self.assertEqual(folders["megadrive"], {"Comix Zone": "", "Sonic 2": "Sonic",
+                                                "Sonic the Hedgehog": ""})
 
     def test_roms_stay_on_the_box(self):
         roms = self.build()["megadrive"].roms
@@ -863,6 +936,20 @@ class CatalogDaemonTest(unittest.TestCase):
         self.settings = {"UIMode": "Kid"}
         self.refresh()
         self.assertEqual(list(self.d.catalog), ["megadrive"])
+
+    def test_folder_view_changed_publishes_the_system_again(self):
+        self.fake.games["snes"].append({"id": "b1", "path": "/userdata/roms/snes/Zelda/Zelda.sfc",
+                                        "name": "Zelda"})
+        self.settings = {"FolderViewMode": "always"}
+        self.refresh()
+        self.published()
+        self.settings = {"FolderViewMode": "always", "snes.FolderViewMode": "having multiple games"}
+        self.refresh()
+        published = self.published()
+        self.assertEqual([t for t, _ in published], [
+            "batocera/test/catalog/system/snes", "batocera/test/catalog/index"])
+        rows = json.loads(gzip.decompress(published[0][1]))
+        self.assertEqual({r[1]: r[8] for r in rows}, {"Super Mario World": "", "Zelda": ""})
 
     def test_public_web_access(self):
         def flags():
