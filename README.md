@@ -154,7 +154,7 @@ Assistant root on the box. As root on the box, with [`get.sh`](get.sh), which
 downloads this release from GitHub over HTTPS and runs the installer:
 
 ```sh
-curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.9.2/get.sh && sh /tmp/ha-batocera-get.sh
+curl -fsSLo /tmp/ha-batocera-get.sh https://raw.githubusercontent.com/vjt/ha-batocera/v0.9.3/get.sh && sh /tmp/ha-batocera-get.sh
 ```
 
 Then add the integration in Home Assistant and pick "The box already runs
