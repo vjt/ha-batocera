@@ -18,7 +18,8 @@ the TV live, quit a stuck game, and set daily playtime limits.
 
 A Batocera page in Home Assistant's sidebar: the box's games with their
 covers, favourites, recently played, one tile per system and per ROM folder
-(ROMs sorted into folders, by genre or anything else, are browsed as such).
+(ROMs sorted into folders, by genre or anything else, are browsed as such,
+as EmulationStation's folder view shows them).
 Each place says how many games it holds.
 
 <p>

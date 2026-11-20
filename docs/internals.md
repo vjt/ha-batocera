@@ -245,9 +245,17 @@ then. `catalog/system/<name>` holds, gzip-compressed, one row per game:
 
 That is: id, name, year (or `null`), genre, players, flags, play count, last
 played (EmulationStation's local time, or empty), folder, rating. Flags: 1 =
-favourite, 2 = has a cover. The folder is where the ROM sits under its
-system's ROM folder (`Fighter` for `/userdata/roms/mame/Fighter/kinst.zip`,
-`a/b` when nested), empty for a ROM at the top. The rating is
+favourite, 2 = has a cover. The folder is where EmulationStation lists the
+game, under its system's ROM folder (`Fighter` for
+`/userdata/roms/mame/Fighter/kinst.zip`, `a/b` when nested), empty at the
+top, as its folder view has it: the system's own `FolderViewMode` from
+`es_settings.cfg`, unless unset or `auto`, else the global one, `never`
+when unset (`windows_installers` always shows its folders). With `always`
+it is the ROM's folder; with `never`, every game is at the top; with
+`having multiple games`, a folder holding a single game, its sub-folders
+included, lists that game in its place (hidden games aside, kid games or
+not). A changed folder view shows at the next reading of the catalog. The
+rating is
 EmulationStation's, from 0 to 1, or `null` when the game is unrated (`0`) or
 the rating is not a number; rows of daemons before 0.7 stop at the folder,
 and their games count as unrated. The id is the first 12 hex digits of the
