@@ -126,6 +126,15 @@ def read_conf(path):
     return conf
 
 
+def conf_on(conf, key):
+    """Whether a setting of ha-batocera.conf that is "on" or "off" is on:
+    off when it is not there."""
+    value = conf.get(key, "off").lower()
+    if value not in ("on", "off"):
+        log.warning("%s=%r is neither on nor off, taking it as off", key, conf[key])
+    return value == "on"
+
+
 def game_id(path):
     """A game's id: the first 12 hex digits of the MD5 of its ROM path.
 
@@ -829,7 +838,7 @@ def descendants(pid):
 class Daemon:
     def __init__(self, base, env, run=subprocess.run, now=time.time, es=None,
                  settings=es_settings, hotkeys=HOTKEYS, screen_every=SCREEN_EVERY,
-                 es_alive=es_alive, shutdown_flag=SHUTDOWN_FLAG):
+                 es_alive=es_alive, shutdown_flag=SHUTDOWN_FLAG, wake_on_lan=False):
         self.base = base
         self.env = env
         self.run = run
@@ -840,6 +849,7 @@ class Daemon:
         self.screen_every = screen_every
         self.es_alive = es_alive
         self.shutdown_flag = shutdown_flag
+        self.wake_on_lan = wake_on_lan  # turn Wake-on-LAN on: wake_on_lan=on
         self.shutting_down = None  # the shutdown in progress: {rid, until}
         self.network_sent = None  # the network report on the broker
         self.wol_tried = False  # Wake-on-LAN armed once per run, if it was off
@@ -1329,8 +1339,9 @@ class Daemon:
         """Publish how Home Assistant can wake the box, when it changed: the
         interface of the default route, its MAC and IPv4 broadcast
         addresses, and its Wake-on-LAN setting. Home Assistant keeps them
-        for when the box is off. Wake-on-LAN off but supported is turned on
-        to the magic packet ("g"), once per run."""
+        for when the box is off. With wake_on_lan=on in the settings,
+        Wake-on-LAN off but supported is turned on to the magic packet
+        ("g"), once per run; otherwise the card is left as it is."""
         iface = default_interface(self.run)
         if iface is None:  # the network is not up yet
             self.at("network", NETWORK_RETRY, self.check_network)
@@ -1338,7 +1349,7 @@ class Daemon:
         self.at("network", NETWORK_EVERY, self.check_network)
         mac, broadcast = interface_addresses(self.run, iface)
         wol, supported = wake_on(run_text(self.run, ["ethtool", iface]))
-        if wol != "g" and "g" in supported and not self.wol_tried:
+        if self.wake_on_lan and wol != "g" and "g" in supported and not self.wol_tried:
             self.wol_tried = True
             log.info("Wake-on-LAN on %s is %r: turning it on", iface, wol)
             if run_text(self.run, ["ethtool", "-s", iface, "wol", "g"]) is None:
@@ -1605,10 +1616,11 @@ def main():
         log.warning("screen_every=%r is not a number, using %d",
                     conf["screen_every"], SCREEN_EVERY)
         screen_every = SCREEN_EVERY
+    wake_on_lan = conf_on(conf, "wake_on_lan")
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     log.info("starting %s, topics under %s/", VERSION, base)
     try:
-        Daemon(base, env, es=es, screen_every=screen_every).serve()
+        Daemon(base, env, es=es, screen_every=screen_every, wake_on_lan=wake_on_lan).serve()
     except Exception:
         log.exception("crashed")
         raise

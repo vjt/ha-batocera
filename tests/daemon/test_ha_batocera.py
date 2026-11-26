@@ -226,6 +226,14 @@ class ConfTest(TempDirTest):
     def test_missing_conf(self):
         self.assertEqual(hb.read_conf(self.tmp / "nope"), {})
 
+    def test_on_or_off(self):
+        self.assertTrue(hb.conf_on({"wake_on_lan": "on"}, "wake_on_lan"))
+        self.assertTrue(hb.conf_on({"wake_on_lan": "ON"}, "wake_on_lan"))
+        self.assertFalse(hb.conf_on({"wake_on_lan": "off"}, "wake_on_lan"))
+        self.assertFalse(hb.conf_on({}, "wake_on_lan"))  # off unless asked
+        with self.assertLogs(hb.log, "WARNING"):
+            self.assertFalse(hb.conf_on({"wake_on_lan": "yes please"}, "wake_on_lan"))
+
 
 class GameInfoTest(TempDirTest):
     def setUp(self):
@@ -1629,9 +1637,10 @@ class NetRecorder(Recorder):
 
 
 class NetworkTest(unittest.TestCase):
-    def check(self, **net):
+    def check(self, wake_on_lan=False, **net):
         self.run = NetRecorder(**net)
-        self.d = hb.Daemon("batocera/test", {}, run=self.run, now=Clock())
+        self.d = hb.Daemon("batocera/test", {}, run=self.run, now=Clock(),
+                           wake_on_lan=wake_on_lan)
         with self.assertLogs(hb.log, "INFO"):
             self.d.check_network()
         return self.reports()
@@ -1649,8 +1658,15 @@ class NetworkTest(unittest.TestCase):
         self.d.check_network()
         self.assertEqual(self.reports(), [])  # retained: only when it changes
 
-    def test_wake_on_lan_turned_on_once(self):
-        [report] = self.check(wol="d")
+    def test_wake_on_lan_left_as_it_is(self):
+        # Off on purpose, maybe: the report says so and nothing changes.
+        self.assertEqual(self.check(wol="d"), [{
+            "interface": "eth0", "mac": "38:05:25:0a:0b:0c", "broadcast": "192.0.2.255",
+            "wake_on": "d", "supports_wake_on": "pumbg"}])
+        self.assertNotIn("-s", [c[1] for c, _ in self.run.calls if c[0] == "ethtool"])
+
+    def test_wake_on_lan_turned_on_once_when_asked(self):
+        [report] = self.check(wake_on_lan=True, wol="d")
         self.assertIn(["ethtool", "-s", "eth0", "wol", "g"], [c for c, _ in self.run.calls])
         self.assertEqual(report["wake_on"], "g")
         self.run.wol = "d"  # turned off again: that is someone's choice
@@ -1661,7 +1677,7 @@ class NetworkTest(unittest.TestCase):
         self.assertNotIn(["ethtool", "-s", "eth0", "wol", "g"], [c for c, _ in self.run.calls])
 
     def test_a_card_that_cannot_wake(self):
-        [report] = self.check(wol="d", supported="d")
+        [report] = self.check(wake_on_lan=True, wol="d", supported="d")
         self.assertEqual((report["wake_on"], report["supports_wake_on"]), ("d", "d"))
         self.assertNotIn("-s", [c[1] for c, _ in self.run.calls if c[0] == "ethtool"])
 
