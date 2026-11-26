@@ -76,7 +76,11 @@ own count, with the years before.
 - **Shut down**: the box goes off the way EmulationStation's own menu does
   it, so the gamelists are saved, after quitting the game as stop does.
 - **Power on**: Wake-on-LAN, with no MAC address to type in: the box tells
-  Home Assistant how to wake it while it is on.
+  Home Assistant how to wake it while it is on. Its network card must have
+  Wake-on-LAN on (the diagnostic Wake-on-LAN sensor says whether it has):
+  ha-batocera leaves that setting alone unless `wake_on_lan=on` is in
+  `/userdata/system/ha-batocera/ha-batocera.conf`, and then turns it on,
+  if it is off, each time the daemon starts.
 - **Limits**: a daily playtime cap, a time window in which games are allowed,
   a manual lock, and a warning five minutes before the end. Batocera has no
   user profiles, so limits apply to the whole box.

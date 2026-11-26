@@ -65,11 +65,13 @@ flowchart LR
   broadcast address: Home Assistant may have several networks, and
   `255.255.255.255` leaves from the default route's. The daemon reports
   the MAC and broadcast addresses of its default route's interface, and
-  its Wake-on-LAN setting; when that is off but the card can wake on the
-  magic packet, it turns it on (`ethtool -s <interface> wol g`), once
-  each time it starts. Home Assistant keeps the last report for when the
-  box is off; the integration's options can override both addresses,
-  under Advanced.
+  its Wake-on-LAN setting, which it changes only with `wake_on_lan=on` in
+  `ha-batocera.conf`: then, when Wake-on-LAN is off but the card can wake
+  on the magic packet, it turns it on (`ethtool -s <interface> wol g`),
+  once each time it starts. Without it, a card set not to wake stays so,
+  and Power on cannot wake the box. Home Assistant keeps the last report
+  for when the box is off; the integration's options can override both
+  addresses, under Advanced.
 
 ## The installer
 
@@ -94,7 +96,7 @@ Files on the box:
 | File | Contents |
 |------|----------|
 | `/userdata/system/ha-batocera/VERSION` | the installed version |
-| `/userdata/system/ha-batocera/ha-batocera.conf` | `device=` and, optionally, `topic_prefix=` (default `batocera`) and `screen_every=` |
+| `/userdata/system/ha-batocera/ha-batocera.conf` | `device=` and, optionally, `topic_prefix=` (default `batocera`), `screen_every=` and `wake_on_lan=` (`on` or `off`, default `off`) |
 | `/userdata/system/ha-batocera/mosquitto_pub`, `mosquitto_sub` | broker options, one per line: `-h mqtt.example.lan`, `-p 1883`, `-u user`, `-P password`; TLS options such as `--cafile` work too |
 | `/userdata/system/logs/ha-batocera.log` | the daemon's log |
 
