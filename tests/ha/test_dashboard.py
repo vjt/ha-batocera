@@ -1,11 +1,19 @@
 """The Batocera sidebar page: one panel view and card per box."""
 
+import threading
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.batocera import dashboard
 from custom_components.batocera.const import CONF_TOPIC, DOMAIN
-from custom_components.batocera.dashboard import CARD_FILE, _save
+from custom_components.batocera.dashboard import (
+    CARD_FILE,
+    CARD_URL,
+    _save,
+    async_setup_dashboard,  # before conftest's no_dashboard replaces it
+)
 
 
 async def test_one_card_per_box(hass, mqtt_mock, setup):
@@ -57,6 +65,26 @@ async def test_one_card_per_box(hass, mqtt_mock, setup):
     # An unloaded box leaves the page.
     assert await hass.config_entries.async_unload(other.entry_id)
     assert set(hass.data[DOMAIN]) == {setup.entry_id}
+
+
+async def test_the_card_url_changes_with_the_card(hass):
+    """The card's URL carries its mtime, read in the executor: a stat in
+    the event loop blocks it."""
+    real, ran = dashboard._card_version, []
+
+    def version():
+        ran.append((threading.current_thread(), real()))
+        return ran[-1][1]
+
+    hass.http = Mock(async_register_static_paths=AsyncMock())
+    with patch.object(dashboard, "_card_version", version), patch(
+        "homeassistant.components.frontend.add_extra_js_url"
+    ) as add_js, patch("homeassistant.components.frontend.async_register_built_in_panel"):
+        await async_setup_dashboard(hass)
+    [(thread, mtime)] = ran
+    assert thread is not threading.current_thread()
+    assert mtime == int((await hass.async_add_executor_job(CARD_FILE.stat)).st_mtime)
+    add_js.assert_called_once_with(hass, f"{CARD_URL}?v={mtime}")
 
 
 def test_the_card_and_its_font_ship_with_the_integration():

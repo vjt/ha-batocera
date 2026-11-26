@@ -45,6 +45,12 @@ ROLES = {
 }
 
 
+def _card_version() -> int:
+    """The card's mtime, which busts the browser cache when the card changes.
+    A stat blocks: run it in the executor."""
+    return int(CARD_FILE.stat().st_mtime)
+
+
 async def async_setup_dashboard(hass: HomeAssistant) -> None:
     await hass.http.async_register_static_paths(
         [
@@ -52,8 +58,8 @@ async def async_setup_dashboard(hass: HomeAssistant) -> None:
             StaticPathConfig(FONTS_URL, str(WWW / "fonts"), cache_headers=True),
         ]
     )
-    # mtime busts the browser cache when the card changes
-    frontend.add_extra_js_url(hass, f"{CARD_URL}?v={int(CARD_FILE.stat().st_mtime)}")
+    version = await hass.async_add_executor_job(_card_version)
+    frontend.add_extra_js_url(hass, f"{CARD_URL}?v={version}")
     frontend.async_register_built_in_panel(
         hass,
         component_name="lovelace",
